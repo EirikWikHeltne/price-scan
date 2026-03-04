@@ -1,4 +1,4 @@
-# Karo Priser
+# Karo Price Scan
 
 Daily price monitoring across 4 Norwegian pharmacy chains.
 
