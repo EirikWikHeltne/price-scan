@@ -1,4 +1,4 @@
-"""Farmasiet.no — SSR, prices in JSON-LD. No browser needed."""
+"""Farmasiet.no — SSR, prices via content attribute."""
 import json, re, time
 import requests
 from bs4 import BeautifulSoup
@@ -11,7 +11,7 @@ def search_url(varenummer):
     try:
         r = requests.get(f"{BASE}/search?q={varenummer}", headers=HEADS, timeout=12)
         soup = BeautifulSoup(r.text, "lxml")
-        # Product URLs end with ,{internal_id} e.g. /catalog/.../paracet-tab,5105290
+        # Product URLs end with ,{internal_id}
         for link in soup.find_all("a", href=re.compile(r",\d+$")):
             href = link["href"]
             return BASE + href if href.startswith("/") else href
@@ -23,6 +23,15 @@ def fetch_price(url):
     try:
         r = requests.get(url, headers=HEADS, timeout=12)
         soup = BeautifulSoup(r.text, "lxml")
+        # Primary: content attribute on price element
+        el = soup.find(attrs={"data-testid": "product-page-default-price"})
+        if el:
+            content = el.get("content") or el.get("itemprop")
+            try:
+                pris = float(content)
+                return pris, "på lager" in r.text.lower()
+            except: pass
+        # Fallback: JSON-LD
         for tag in soup.find_all("script", type="application/ld+json"):
             try:
                 d = json.loads(tag.string or "")
@@ -30,8 +39,8 @@ def fetch_price(url):
                     price = float(d["offers"].get("price", 0)) or None
                     if price:
                         return price, "på lager" in r.text.lower()
-            except Exception:
-                pass
+            except: pass
+        # Last resort: regex
         m = re.search(r'"price"\s*:\s*"?([\d.]+)"?', r.text)
         price = float(m.group(1)) if m else None
         return price, "på lager" in r.text.lower()
@@ -43,7 +52,7 @@ def run(products):
     results, resolved = [], {}
     for p in products:
         url = p.get("url_farmasiet")
-        # Discard any bad category URLs from previous run (no comma = not a product page)
+        # Discard bad category URLs (no comma = not a product page)
         if url and not re.search(r",\d+$", url):
             url = None
         if not url:
