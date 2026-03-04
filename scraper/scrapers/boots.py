@@ -23,6 +23,8 @@ def fetch_price(url):
     try:
         r = requests.get(url, headers=HEADS, timeout=12)
         soup = BeautifulSoup(r.text, "lxml")
+
+        # Primary: JSON-LD
         for tag in soup.find_all("script", type="application/ld+json"):
             try:
                 d = json.loads(tag.string or "")
@@ -32,10 +34,24 @@ def fetch_price(url):
                         return price, "på lager" in r.text.lower()
             except Exception:
                 pass
-        m = re.search(r"Kr\s*([\d\s]+[,.][\d]+)", r.text)
+
+        # Fallback: search raw HTML for price pattern like "90,90" or "90.90"
+        # Boots renders price as plain text near the product title
+        m = re.search(r'(\d{2,4})[,.](\d{2})\s*(?:kr|,-|</)', r.text)
         if m:
-            price = float(m.group(1).replace(" ", "").replace(",", "."))
+            price = float(f"{m.group(1)}.{m.group(2)}")
             return price, "på lager" in r.text.lower()
+
+        # Last resort: any element with price-related class
+        for sel in ["[class*='price']", "[class*='Price']", ".price", "span.price"]:
+            el = soup.select_one(sel)
+            if el:
+                raw = re.sub(r'[^\d,.]', '', el.get_text().strip())
+                raw = raw.replace(",", ".")
+                m = re.search(r"(\d+\.?\d*)", raw)
+                if m and float(m.group(1)) > 0:
+                    return float(m.group(1)), "på lager" in r.text.lower()
+
         return None, None
     except Exception as e:
         print(f"  [boots] error: {e}")
