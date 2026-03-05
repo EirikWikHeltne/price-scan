@@ -8,30 +8,53 @@ BASE   = "https://www.vitusapotek.no"
 def run(products):
     results, resolved = [], {}
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+        context = browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            ),
+            locale="nb-NO",
+        )
         for prod in products:
             url = prod.get("url_vitusapotek")
             if not url:
+                page = None
                 try:
-                    page = browser.new_page()
+                    page = context.new_page()
                     page.goto(f"{BASE}/search?q={prod['varenummer']}", timeout=20000)
-                    page.wait_for_load_state("networkidle", timeout=12000)
+                    # Do NOT use networkidle — wrap any wait in try/except
+                    try:
+                        page.wait_for_selector("a[href*='/p/']", timeout=8000)
+                    except:
+                        pass
                     link = page.query_selector("a[href*='/p/']")
                     if link:
                         href = link.get_attribute("href")
                         url = BASE + href if href.startswith("/") else href
                         resolved[prod["varenummer"]] = url
                     page.close()
-                except Exception:
-                    try: page.close()
-                    except: pass
+                except Exception as e:
+                    print(f"  [vitusapotek] search error {prod['varenummer']}: {e}")
+                    if page:
+                        try: page.close()
+                        except: pass
             if not url:
                 print(f"  [vitusapotek] no URL: {prod['varenummer']}")
+                results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": None, "pa_lager": None})
                 continue
+            page = None
             try:
-                page = browser.new_page()
+                page = context.new_page()
                 page.goto(url, timeout=20000)
-                page.wait_for_load_state("networkidle", timeout=12000)
+                # Do NOT use networkidle — it times out and skips extraction
+                try:
+                    page.wait_for_selector(
+                        "script[type='application/ld+json'], [class*='price'], [class*='Price']",
+                        timeout=10000
+                    )
+                except:
+                    pass  # Continue and attempt extraction anyway
                 pris = None
                 for el in page.query_selector_all("script[type='application/ld+json']"):
                     try:
@@ -56,7 +79,10 @@ def run(products):
                 time.sleep(0.3)
             except Exception as e:
                 print(f"  [vitusapotek] error {prod['varenummer']}: {e}")
-                try: page.close()
-                except: pass
+                if page:
+                    try: page.close()
+                    except: pass
+                results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": None, "pa_lager": None})
+        context.close()
         browser.close()
     return results, resolved
