@@ -1,24 +1,80 @@
-"""Apotek1.no — single browser context, URL ends in -{varenummer}p"""
-import re, time, json
+"""Apotek1.no — sitemap URL discovery, requests price extraction, Playwright fallback."""
+import re, time, json, requests
 from playwright.sync_api import sync_playwright
 
 BUTIKK = "apotek1"
 BASE   = "https://www.apotek1.no"
 
-# Injected into every page to hide automation signals
+_UA = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+_REQ_HEADERS = {
+    "User-Agent": _UA,
+    "Accept-Language": "nb-NO,nb;q=0.9,no;q=0.8",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+}
 _STEALTH = """
 Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
 window.chrome = {runtime: {}};
 Object.defineProperty(navigator, 'languages', {get: () => ['nb-NO','nb','no','en-US','en']});
 """
 
-def _extract_price(page):
-    # Layer 1: JSON-LD structured data
-    for tag in page.query_selector_all("script[type='application/ld+json']"):
+
+# ---------------------------------------------------------------------------
+# Sitemap-based URL discovery
+# ---------------------------------------------------------------------------
+
+def _parse_sitemap_urls(text, index):
+    """Extract varenummer→URL pairs from sitemap XML text."""
+    for url in re.findall(r'<loc>\s*(https?://[^\s<]+)\s*</loc>', text):
+        m = re.search(r'-(\d{4,8})p/?$', url)
+        if m:
+            index[m.group(1)] = url
+
+
+def _fetch_and_index(url, index, depth=0):
+    if depth > 2:
+        return
+    try:
+        r = requests.get(url, headers=_REQ_HEADERS, timeout=30)
+        r.raise_for_status()
+        text = r.text
+        if '<sitemapindex' in text or ('<sitemap>' in text and '<loc>' in text):
+            # Sitemap index — recurse into sub-sitemaps
+            sub_urls = re.findall(r'<loc>\s*(https?://[^\s<]+)\s*</loc>', text)
+            for sub in sub_urls:
+                # Prefer product sitemaps; at depth 0 fetch all
+                if depth == 0 or 'product' in sub.lower():
+                    _fetch_and_index(sub, index, depth + 1)
+        else:
+            _parse_sitemap_urls(text, index)
+    except Exception as e:
+        print(f"  [apotek1] sitemap error {url}: {e}")
+
+
+def _build_sitemap_index():
+    """Download Apotek1 sitemaps and return varenummer→URL dict."""
+    index = {}
+    print("  [apotek1] building URL index from sitemap...")
+    _fetch_and_index(f"{BASE}/sitemap.xml", index)
+    print(f"  [apotek1] sitemap: {len(index)} product URLs indexed")
+    return index
+
+
+# ---------------------------------------------------------------------------
+# Price extraction helpers
+# ---------------------------------------------------------------------------
+
+def _extract_price_from_html(html):
+    """Try to extract price from server-rendered HTML (no JS required)."""
+    # JSON-LD blocks
+    for block in re.findall(
+        r'<script[^>]+application/ld\+json[^>]*>(.*?)</script>', html, re.DOTALL
+    ):
         try:
-            d = json.loads(tag.inner_text())
-            items = d if isinstance(d, list) else [d]
-            for item in items:
+            d = json.loads(block)
+            for item in (d if isinstance(d, list) else [d]):
                 if not isinstance(item, dict):
                     continue
                 offer = item.get("offers")
@@ -30,7 +86,35 @@ def _extract_price(page):
                         return pris
         except:
             pass
-    # Layer 2: data-testid price attributes
+    # Generic "price" key anywhere in page source
+    m = re.search(r'"price"\s*:\s*"?([\d]+(?:[.,]\d+)?)"?', html)
+    if m:
+        try:
+            return float(m.group(1).replace(",", "."))
+        except:
+            pass
+    return None
+
+
+def _extract_price_from_page(page):
+    """Extract price from a rendered Playwright page."""
+    # Layer 1: JSON-LD
+    for tag in page.query_selector_all("script[type='application/ld+json']"):
+        try:
+            d = json.loads(tag.inner_text())
+            for item in (d if isinstance(d, list) else [d]):
+                if not isinstance(item, dict):
+                    continue
+                offer = item.get("offers")
+                if offer:
+                    if isinstance(offer, list):
+                        offer = offer[0]
+                    pris = float(offer.get("price", 0)) or None
+                    if pris:
+                        return pris
+        except:
+            pass
+    # Layer 2: data-testid
     for sel in ["[data-testid='price']", "[data-testid*='price']", "[data-testid*='Price']"]:
         el = page.query_selector(sel)
         if el:
@@ -46,7 +130,7 @@ def _extract_price(page):
             m = re.search(r"(\d+\.?\d*)", raw)
             if m:
                 return float(m.group(1))
-    # Layer 3: Broad CSS class selectors
+    # Layer 3: CSS class selectors
     for sel in ["[class*='price']", "[class*='Price']", "[class*='pris']", "[class*='Pris']"]:
         el = page.query_selector(sel)
         if el:
@@ -54,15 +138,26 @@ def _extract_price(page):
             m = re.search(r"(\d+\.?\d*)", raw)
             if m:
                 return float(m.group(1))
-    # Layer 4: Regex on page source
-    m = re.search(r'"price"\s*:\s*"?([\d.]+)"?', page.content())
+    # Layer 4: Regex on full page source
+    m = re.search(r'"price"\s*:\s*"?([\d]+(?:[.,]\d+)?)"?', page.content())
     if m:
-        return float(m.group(1))
+        try:
+            return float(m.group(1).replace(",", "."))
+        except:
+            pass
     return None
 
 
+# ---------------------------------------------------------------------------
+# Main run function
+# ---------------------------------------------------------------------------
+
 def run(products):
     results, resolved = [], {}
+
+    # Step 1: build sitemap URL index (HTTP, no browser, bypasses bot protection)
+    sitemap_index = _build_sitemap_index()
+
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
@@ -74,10 +169,7 @@ def run(products):
             ]
         )
         context = browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            ),
+            user_agent=_UA,
             locale="nb-NO",
             timezone_id="Europe/Oslo",
             extra_http_headers={
@@ -89,19 +181,23 @@ def run(products):
 
         for prod in products:
             url = prod.get("url_apotek1")
+
+            # Resolve URL: DB cache → sitemap index → browser search
+            if not url:
+                url = sitemap_index.get(prod["varenummer"])
+                if url:
+                    resolved[prod["varenummer"]] = url
+
             if not url:
                 page = None
                 try:
                     page = context.new_page()
                     page.goto(f"{BASE}/search?q={prod['varenummer']}", timeout=30000)
-                    # Wait for Algolia search results — exact product match first
                     try:
                         page.wait_for_selector(
-                            f"a[href$='-{prod['varenummer']}p']",
-                            timeout=10000
+                            f"a[href$='-{prod['varenummer']}p']", timeout=10000
                         )
                     except:
-                        # Fallback: any product link
                         try:
                             page.wait_for_selector("a[href*='/produkter/']", timeout=5000)
                         except:
@@ -129,32 +225,46 @@ def run(products):
                 results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": None, "pa_lager": None})
                 continue
 
-            page = None
+            # Fetch price: try plain HTTP first (fast), fall back to Playwright
+            pris = None
+            lager = None
             try:
-                page = context.new_page()
-                page.goto(url, timeout=30000)
-                # Wait for price element — do NOT use networkidle (it times out on Apotek1)
-                try:
-                    page.wait_for_selector(
-                        "script[type='application/ld+json'], [data-testid*='price'], [class*='Price']",
-                        timeout=15000
-                    )
-                except:
-                    pass  # Continue and attempt extraction anyway
-                pris = _extract_price(page)
-                lager = "på lager" in page.content().lower()
-                page.close()
-                print(f"  [apotek1] {prod['varenummer']}: {pris}")
-                results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": pris, "pa_lager": lager})
-                time.sleep(0.3)
+                r = requests.get(url, headers=_REQ_HEADERS, timeout=20)
+                if r.status_code == 200:
+                    pris = _extract_price_from_html(r.text)
+                    lager = "på lager" in r.text.lower()
             except Exception as e:
-                print(f"  [apotek1] error {prod['varenummer']}: {e}")
-                if page:
+                print(f"  [apotek1] requests error {prod['varenummer']}: {e}")
+
+            # Playwright fallback if requests didn't get the price
+            if pris is None:
+                page = None
+                try:
+                    page = context.new_page()
+                    page.goto(url, timeout=30000)
+                    # Do NOT use networkidle — it times out on Apotek1
                     try:
-                        page.close()
+                        page.wait_for_selector(
+                            "script[type='application/ld+json'], [data-testid*='price'], [class*='Price']",
+                            timeout=15000
+                        )
                     except:
-                        pass
-                results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": None, "pa_lager": None})
+                        pass  # Continue and attempt extraction anyway
+                    pris = _extract_price_from_page(page)
+                    if lager is None:
+                        lager = "på lager" in page.content().lower()
+                    page.close()
+                except Exception as e:
+                    print(f"  [apotek1] browser error {prod['varenummer']}: {e}")
+                    if page:
+                        try:
+                            page.close()
+                        except:
+                            pass
+
+            print(f"  [apotek1] {prod['varenummer']}: {pris}")
+            results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": pris, "pa_lager": lager})
+            time.sleep(0.3)
 
         context.close()
         browser.close()
