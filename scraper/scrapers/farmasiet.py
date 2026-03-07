@@ -1,9 +1,23 @@
 """Farmasiet.no — requests-first price extraction, Playwright fallback."""
 import re, time, json, requests
+from urllib.parse import quote, urlparse
 from playwright.sync_api import sync_playwright
 
-BUTIKK = "farmasiet"
-BASE   = "https://www.farmasiet.no"
+BUTIKK       = "farmasiet"
+BASE         = "https://www.farmasiet.no"
+ALLOWED_HOST = "www.farmasiet.no"
+
+
+def _safe_url(href):
+    """Return absolute URL only if it resolves to the expected host."""
+    url = BASE + href if href.startswith("/") else href
+    try:
+        host = urlparse(url).netloc
+        if host in (ALLOWED_HOST, ALLOWED_HOST.removeprefix("www.")):
+            return url
+    except Exception:
+        pass
+    return None
 
 _UA = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -39,7 +53,7 @@ def _extract_price_from_html(html):
                     pris = float(offer.get("price", 0)) or None
                     if pris:
                         return pris
-        except:
+        except Exception:
             pass
     # Layer 2: data-testid content attribute
     m = re.search(r'data-testid=["\'][^"\']*price[^"\']*["\'][^>]*content=["\']([0-9.]+)["\']', html, re.IGNORECASE)
@@ -48,14 +62,14 @@ def _extract_price_from_html(html):
     if m:
         try:
             return float(m.group(1))
-        except:
+        except Exception:
             pass
     # Layer 3: generic "price" key in page source
     m = re.search(r'"price"\s*:\s*"?([\d]+(?:[.,]\d+)?)"?', html)
     if m:
         try:
             return float(m.group(1).replace(",", "."))
-        except:
+        except Exception:
             pass
     return None
 
@@ -76,7 +90,7 @@ def _extract_price_from_page(page):
                     pris = float(offer.get("price", 0)) or None
                     if pris:
                         return pris
-        except:
+        except Exception:
             pass
     # Layer 2: data-testid
     el = page.query_selector("[data-testid*='price']")
@@ -87,7 +101,7 @@ def _extract_price_from_page(page):
                 pris = float(content)
                 if pris:
                     return pris
-            except:
+            except Exception:
                 pass
         raw = el.inner_text().replace("kr", "").replace(",", ".").strip()
         m = re.search(r"(\d+\.?\d*)", raw)
@@ -106,7 +120,7 @@ def _extract_price_from_page(page):
     if m:
         try:
             return float(m.group(1).replace(",", "."))
-        except:
+        except Exception:
             pass
     return None
 
@@ -135,15 +149,15 @@ def run(products):
                 page = None
                 try:
                     page = context.new_page()
-                    page.goto(f"{BASE}/search?q={prod['varenummer']}", timeout=20000)
+                    page.goto(f"{BASE}/search?q={quote(prod['varenummer'])}", timeout=20000)
                     try:
                         page.wait_for_selector("a[href*='/catalog/']", timeout=8000)
-                    except:
+                    except Exception:
                         pass
                     for link in page.query_selector_all("a[href*='/catalog/']"):
                         href = link.get_attribute("href")
                         if _valid_product_url(href):
-                            url = BASE + href if href.startswith("/") else href
+                            url = _safe_url(href)
                             resolved[prod["varenummer"]] = url
                             break
                     page.close()
@@ -152,7 +166,7 @@ def run(products):
                     if page:
                         try:
                             page.close()
-                        except:
+                        except Exception:
                             pass
 
             if not url:
@@ -183,7 +197,7 @@ def run(products):
                             "script[type='application/ld+json'], [data-testid*='price'], [class*='price']",
                             timeout=10000
                         )
-                    except:
+                    except Exception:
                         pass  # Continue and attempt extraction anyway
                     pris = _extract_price_from_page(page)
                     if lager is None:
@@ -194,7 +208,7 @@ def run(products):
                     if page:
                         try:
                             page.close()
-                        except:
+                        except Exception:
                             pass
 
             print(f"  [farmasiet] {prod['varenummer']}: {pris}")

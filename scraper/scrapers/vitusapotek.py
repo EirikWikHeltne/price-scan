@@ -1,9 +1,23 @@
 """Vitusapotek.no — single browser session for all products."""
 import re, time, json
+from urllib.parse import quote, urlparse
 from playwright.sync_api import sync_playwright
 
-BUTIKK = "vitusapotek"
-BASE   = "https://www.vitusapotek.no"
+BUTIKK       = "vitusapotek"
+BASE         = "https://www.vitusapotek.no"
+ALLOWED_HOST = "www.vitusapotek.no"
+
+
+def _safe_url(href):
+    """Return absolute URL only if it resolves to the expected host."""
+    url = BASE + href if href.startswith("/") else href
+    try:
+        host = urlparse(url).netloc
+        if host in (ALLOWED_HOST, ALLOWED_HOST.removeprefix("www.")):
+            return url
+    except Exception:
+        pass
+    return None
 
 def run(products):
     results, resolved = [], {}
@@ -22,16 +36,16 @@ def run(products):
                 page = None
                 try:
                     page = context.new_page()
-                    page.goto(f"{BASE}/search?q={prod['varenummer']}", timeout=20000)
+                    page.goto(f"{BASE}/search?q={quote(prod['varenummer'])}", timeout=20000)
                     # Do NOT use networkidle — wrap any wait in try/except
                     try:
                         page.wait_for_selector("a[href*='/p/']", timeout=8000)
-                    except:
+                    except Exception:
                         pass
                     link = page.query_selector("a[href*='/p/']")
                     if link:
                         href = link.get_attribute("href")
-                        url = BASE + href if href.startswith("/") else href
+                        url = _safe_url(href)
                         resolved[prod["varenummer"]] = url
                     page.close()
                 except Exception as e:
@@ -53,7 +67,7 @@ def run(products):
                         "script[type='application/ld+json'], [class*='price'], [class*='Price']",
                         timeout=10000
                     )
-                except:
+                except Exception:
                     pass  # Continue and attempt extraction anyway
                 pris = None
                 for el in page.query_selector_all("script[type='application/ld+json']"):

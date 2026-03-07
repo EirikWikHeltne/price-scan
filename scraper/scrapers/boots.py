@@ -2,19 +2,35 @@
 import json, re, time
 import requests
 from bs4 import BeautifulSoup
+from urllib.parse import quote, urlparse
 
-BUTIKK = "boots"
-BASE   = "https://www.boots.no"
-HEADS  = {"User-Agent": "Mozilla/5.0", "Accept-Language": "nb-NO"}
+BUTIKK       = "boots"
+BASE         = "https://www.boots.no"
+ALLOWED_HOST = "www.boots.no"
+HEADS        = {"User-Agent": "Mozilla/5.0", "Accept-Language": "nb-NO"}
+
+
+def _safe_url(href):
+    """Return absolute URL only if it resolves to the expected host."""
+    url = href if href.startswith("http") else BASE + href
+    try:
+        host = urlparse(url).netloc
+        if host in (ALLOWED_HOST, ALLOWED_HOST.removeprefix("www.")):
+            return url
+    except Exception:
+        pass
+    return None
+
 
 def search_url(varenummer):
     try:
-        r = requests.get(f"{BASE}/catalogsearch/result/?q={varenummer}", headers=HEADS, timeout=12)
+        r = requests.get(
+            f"{BASE}/catalogsearch/result/?q={quote(varenummer)}", headers=HEADS, timeout=12
+        )
         soup = BeautifulSoup(r.text, "lxml")
         link = soup.find("a", href=re.compile(f"-{varenummer}$"))
         if link:
-            href = link["href"]
-            return href if href.startswith("http") else BASE + href
+            return _safe_url(link["href"])
     except Exception:
         pass
     return None
