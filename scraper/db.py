@@ -8,10 +8,13 @@ _client = None
 def get_client():
     global _client
     if _client is None:
-        _client = create_client(
-            os.environ["SUPABASE_URL"],
-            os.environ["SUPABASE_SERVICE_KEY"]
-        )
+        url = os.environ.get("SUPABASE_URL")
+        key = os.environ.get("SUPABASE_SERVICE_KEY")
+        if not url or not key:
+            raise EnvironmentError(
+                "Missing required environment variables: SUPABASE_URL and SUPABASE_SERVICE_KEY"
+            )
+        _client = create_client(url, key)
     return _client
 
 def get_active_products():
