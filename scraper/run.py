@@ -2,7 +2,7 @@
 import logging
 from datetime import datetime
 from db import get_active_products, save_resolved_url, bulk_insert_prices
-from scrapers import farmasiet, boots, vitusapotek, apotek1
+from scrapers import farmasiet, boots, vitusapotek, apotek1, oda, apotera, meny
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
@@ -11,6 +11,9 @@ SCRAPERS = {
     "boots":       boots,
     "vitusapotek": vitusapotek,
     "apotek1":     apotek1,
+    "oda":         oda,
+    "apotera":     apotera,
+    "meny":        meny,
 }
 
 def run():
