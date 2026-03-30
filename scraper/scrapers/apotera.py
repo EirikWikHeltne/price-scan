@@ -73,7 +73,9 @@ def _extract_price_from_html(html):
     m = re.search(r'"price"\s*:\s*"?([\d]+(?:[.,]\d+)?)"?', html)
     if m:
         try:
-            return float(m.group(1).replace(",", "."))
+            pris = float(m.group(1).replace(",", "."))
+            if pris > 0:
+                return pris
         except Exception:
             pass
     return None
@@ -125,7 +127,9 @@ def _extract_price_from_page(page):
     m = re.search(r'"price"\s*:\s*"?([\d]+(?:[.,]\d+)?)"?', page.content())
     if m:
         try:
-            return float(m.group(1).replace(",", "."))
+            pris = float(m.group(1).replace(",", "."))
+            if pris > 0:
+                return pris
         except Exception:
             pass
     return None
@@ -161,33 +165,43 @@ def run(products):
                 page = None
                 try:
                     page = context.new_page()
-                    page.goto(
+                    # Try multiple search URL patterns
+                    for search_url in [
                         f"{BASE}/search?q={quote(prod['varenummer'])}",
-                        timeout=20000
-                    )
+                        f"{BASE}/search/?q={quote(prod['varenummer'])}",
+                        f"{BASE}/catalogsearch/result/?q={quote(prod['varenummer'])}",
+                        f"{BASE}/sok?q={quote(prod['varenummer'])}",
+                    ]:
+                        try:
+                            resp = page.goto(search_url, timeout=15000)
+                            if resp and resp.status < 400:
+                                break
+                        except Exception:
+                            pass
                     try:
-                        page.wait_for_selector(
-                            "a[href*='/produkt/'], a[href*='/product/'], a[href*='/p/']",
-                            timeout=8000
-                        )
+                        page.wait_for_load_state("domcontentloaded", timeout=8000)
                     except Exception:
                         pass
-                    # Try multiple product link patterns
-                    for link_sel in [
-                        "a[href*='/produkt/']",
-                        "a[href*='/product/']",
-                        "a[href*='/p/']",
-                        ".product-item a",
-                        "[class*='product'] a[href]",
-                    ]:
-                        link = page.query_selector(link_sel)
-                        if link:
-                            href = link.get_attribute("href")
-                            candidate = _safe_url(href) if href else None
-                            if candidate:
-                                url = candidate
-                                resolved[prod["varenummer"]] = url
-                                break
+                    # Broad scan: collect all hrefs and pick first that looks like a product page
+                    all_links = page.query_selector_all("a[href]")
+                    nav_skip = {"/", "/search", "/search/", "/sok", "/logg-inn", "/handlekurv"}
+                    for link in all_links:
+                        href = link.get_attribute("href") or ""
+                        # Skip nav/utility links
+                        if not href or href in nav_skip or href.startswith("#"):
+                            continue
+                        candidate = _safe_url(href)
+                        if not candidate:
+                            continue
+                        path = urlparse(candidate).path
+                        # Accept paths that look like product pages (have at least 2 segments)
+                        segments = [s for s in path.strip("/").split("/") if s]
+                        if len(segments) >= 2:
+                            url = candidate
+                            resolved[prod["varenummer"]] = url
+                            break
+                    if not url:
+                        print(f"  [apotera] search found no product link for {prod['varenummer']} (url={page.url})")
                     page.close()
                 except Exception as e:
                     print(f"  [apotera] search error {prod['varenummer']}: {e}")

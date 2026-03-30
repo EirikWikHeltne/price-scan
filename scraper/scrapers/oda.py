@@ -81,7 +81,9 @@ def _extract_price_from_html(html):
     m = re.search(r'"price"\s*:\s*"?([\d]+(?:[.,]\d+)?)"?', html)
     if m:
         try:
-            return float(m.group(1).replace(",", "."))
+            pris = float(m.group(1).replace(",", "."))
+            if pris > 0:
+                return pris
         except Exception:
             pass
     return None
@@ -133,7 +135,9 @@ def _extract_price_from_page(page):
     m = re.search(r'"price"\s*:\s*"?([\d]+(?:[.,]\d+)?)"?', page.content())
     if m:
         try:
-            return float(m.group(1).replace(",", "."))
+            pris = float(m.group(1).replace(",", "."))
+            if pris > 0:
+                return pris
         except Exception:
             pass
     return None
