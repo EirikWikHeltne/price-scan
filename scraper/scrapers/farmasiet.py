@@ -149,7 +149,7 @@ def run(products):
                 page = None
                 try:
                     page = context.new_page()
-                    page.goto(f"{BASE}/search?q={quote(prod['varenummer'])}", timeout=20000)
+                    page.goto(f"{BASE}/search?q={quote(prod['varenummer'])}", timeout=12000)
                     try:
                         page.wait_for_selector("a[href*='/catalog/']", timeout=8000)
                     except Exception:
@@ -178,7 +178,7 @@ def run(products):
             pris = None
             lager = None
             try:
-                r = requests.get(url, headers=_REQ_HEADERS, timeout=20)
+                r = requests.get(url, headers=_REQ_HEADERS, timeout=10)
                 if r.status_code == 200:
                     pris = _extract_price_from_html(r.text)
                     lager = "på lager" in r.text.lower()
@@ -190,12 +190,12 @@ def run(products):
                 page = None
                 try:
                     page = context.new_page()
-                    page.goto(url, timeout=20000)
+                    page.goto(url, timeout=12000)
                     # Do NOT use networkidle — it times out and skips extraction
                     try:
                         page.wait_for_selector(
                             "script[type='application/ld+json'], [data-testid*='price'], [class*='price']",
-                            timeout=10000
+                            timeout=5000
                         )
                     except Exception:
                         pass  # Continue and attempt extraction anyway
@@ -213,7 +213,7 @@ def run(products):
 
             print(f"  [farmasiet] {prod['varenummer']}: {pris}")
             results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": pris, "pa_lager": lager})
-            time.sleep(0.3)
+            time.sleep(0.1)
 
         context.close()
         browser.close()

@@ -85,5 +85,5 @@ def run(products):
         pris, lager = fetch_price(url)
         print(f"  [boots] {p['varenummer']}: {pris}")
         results.append({"produkt_id": p["id"], "butikk": BUTIKK, "pris": pris, "pa_lager": lager})
-        time.sleep(0.5)
+        time.sleep(0.1)
     return results, resolved
