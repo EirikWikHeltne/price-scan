@@ -11,7 +11,6 @@ create table public.produkter (
   url_apotek1      text,
   url_oda          text,
   url_apotera      text,
-  url_meny         text,
   aktiv            boolean default true,
   opprettet        timestamptz default now()
 );
@@ -19,7 +18,7 @@ create table public.produkter (
 create table public.priser (
   id          bigint generated always as identity primary key,
   produkt_id  bigint references produkter(id) on delete cascade,
-  butikk      text not null check (butikk in ('farmasiet','boots','vitusapotek','apotek1','oda','apotera','meny')),
+  butikk      text not null check (butikk in ('farmasiet','boots','vitusapotek','apotek1','oda','apotera')),
   pris        numeric(8,2),
   pa_lager    boolean,
   scraped_at  timestamptz default now()
@@ -48,7 +47,6 @@ select
   max(case when pr.butikk = 'apotek1'     then pr.pris end) as apotek1,
   max(case when pr.butikk = 'oda'         then pr.pris end) as oda,
   max(case when pr.butikk = 'apotera'     then pr.pris end) as apotera,
-  max(case when pr.butikk = 'meny'        then pr.pris end) as meny,
   min(pr.pris) as laveste_pris,
   max(pr.pris) as hoyeste_pris,
   max(pr.scraped_at) as sist_oppdatert
