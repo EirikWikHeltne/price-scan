@@ -51,7 +51,7 @@ def _fetch_and_index(url, index, depth=0):
     if depth > 2:
         return
     try:
-        r = requests.get(url, headers=_REQ_HEADERS, timeout=30)
+        r = requests.get(url, headers=_REQ_HEADERS, timeout=15)
         r.raise_for_status()
         text = r.text
         if '<sitemapindex' in text or ('<sitemap>' in text and '<loc>' in text):
@@ -209,16 +209,13 @@ def run(products):
                 page = None
                 try:
                     page = context.new_page()
-                    page.goto(f"{BASE}/search?q={quote(prod['varenummer'])}", timeout=30000)
+                    page.goto(f"{BASE}/search?q={quote(prod['varenummer'])}", timeout=15000)
                     try:
                         page.wait_for_selector(
-                            f"a[href$='-{prod['varenummer']}p']", timeout=10000
+                            f"a[href$='-{prod['varenummer']}p'], a[href*='/produkter/']", timeout=5000
                         )
                     except Exception:
-                        try:
-                            page.wait_for_selector("a[href*='/produkter/']", timeout=5000)
-                        except Exception:
-                            pass
+                        pass
                     link = page.query_selector(f"a[href$='-{prod['varenummer']}p']")
                     if not link:
                         link = page.query_selector("a[href*='/produkter/']")
@@ -246,7 +243,7 @@ def run(products):
             pris = None
             lager = None
             try:
-                r = requests.get(url, headers=_REQ_HEADERS, timeout=20)
+                r = requests.get(url, headers=_REQ_HEADERS, timeout=10)
                 if r.status_code == 200:
                     pris = _extract_price_from_html(r.text)
                     lager = "på lager" in r.text.lower()
@@ -258,12 +255,12 @@ def run(products):
                 page = None
                 try:
                     page = context.new_page()
-                    page.goto(url, timeout=30000)
+                    page.goto(url, timeout=15000)
                     # Do NOT use networkidle — it times out on Apotek1
                     try:
                         page.wait_for_selector(
                             "script[type='application/ld+json'], [data-testid*='price'], [class*='Price']",
-                            timeout=15000
+                            timeout=5000
                         )
                     except Exception:
                         pass  # Continue and attempt extraction anyway
@@ -281,7 +278,7 @@ def run(products):
 
             print(f"  [apotek1] {prod['varenummer']}: {pris}")
             results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": pris, "pa_lager": lager})
-            time.sleep(0.3)
+            time.sleep(0.1)
 
         context.close()
         browser.close()

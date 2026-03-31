@@ -36,7 +36,7 @@ def run(products):
                 page = None
                 try:
                     page = context.new_page()
-                    page.goto(f"{BASE}/search?q={quote(prod['varenummer'])}", timeout=20000)
+                    page.goto(f"{BASE}/search?q={quote(prod['varenummer'])}", timeout=12000)
                     # Do NOT use networkidle — wrap any wait in try/except
                     try:
                         page.wait_for_selector("a[href*='/p/']", timeout=8000)
@@ -60,12 +60,12 @@ def run(products):
             page = None
             try:
                 page = context.new_page()
-                page.goto(url, timeout=20000)
+                page.goto(url, timeout=12000)
                 # Do NOT use networkidle — it times out and skips extraction
                 try:
                     page.wait_for_selector(
                         "script[type='application/ld+json'], [class*='price'], [class*='Price']",
-                        timeout=10000
+                        timeout=5000
                     )
                 except Exception:
                     pass  # Continue and attempt extraction anyway
@@ -90,7 +90,7 @@ def run(products):
                 page.close()
                 print(f"  [vitusapotek] {prod['varenummer']}: {pris}")
                 results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": pris, "pa_lager": lager})
-                time.sleep(0.3)
+                time.sleep(0.1)
             except Exception as e:
                 print(f"  [vitusapotek] error {prod['varenummer']}: {e}")
                 if page:
