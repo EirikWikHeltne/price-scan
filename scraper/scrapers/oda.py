@@ -122,7 +122,9 @@ def _extract_price_from_page(page):
             raw = el.inner_text().replace("kr", "").replace(",", ".").strip()
             m = re.search(r"(\d+\.?\d*)", raw)
             if m:
-                return float(m.group(1))
+                val = float(m.group(1))
+                if val > 0:
+                    return val
     # Layer 3: CSS class selectors
     for sel in ["[class*='price']", "[class*='Price']", "[class*='pris']", "[class*='Pris']"]:
         el = page.query_selector(sel)
@@ -130,7 +132,9 @@ def _extract_price_from_page(page):
             raw = el.inner_text().replace("kr", "").replace(",", ".").strip()
             m = re.search(r"(\d+\.?\d*)", raw)
             if m:
-                return float(m.group(1))
+                val = float(m.group(1))
+                if val > 0:
+                    return val
     # Layer 4: regex on full page source
     m = re.search(r'"price"\s*:\s*"?([\d]+(?:[.,]\d+)?)"?', page.content())
     if m:
@@ -159,7 +163,9 @@ def _fetch_price_via_api(url):
             price_obj = d.get("current_price") or {}
             price_val = price_obj.get("price") if isinstance(price_obj, dict) else None
             if price_val:
-                return float(price_val), d.get("in_stock", True)
+                price_float = float(price_val)
+                if price_float > 0:
+                    return price_float, d.get("in_stock", True)
     except Exception:
         pass
     return None, None

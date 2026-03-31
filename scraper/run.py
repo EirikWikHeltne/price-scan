@@ -17,6 +17,10 @@ SCRAPERS = {
     "meny":        meny,
 }
 
+# Grocery retailers only scrape these categories (pharmacy retailers get all)
+GROCERY_SCRAPERS = {"oda", "meny"}
+GROCERY_CATEGORIES = {"Paracetamol", "Ibuprofen"}
+
 MAX_WORKERS = 4  # run up to 4 scrapers in parallel
 
 
@@ -38,10 +42,16 @@ def run():
     products = get_active_products()
     print(f"Loaded {len(products)} products")
 
+    grocery_products = [p for p in products if p.get("kategori") in GROCERY_CATEGORIES]
+    print(f"Grocery-filtered: {len(grocery_products)} products (Paracetamol/Ibuprofen)")
+
     all_rows = []
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
         futures = {
-            pool.submit(_run_scraper, name, module, products): name
+            pool.submit(
+                _run_scraper, name, module,
+                grocery_products if name in GROCERY_SCRAPERS else products
+            ): name
             for name, module in SCRAPERS.items()
         }
         for future in as_completed(futures):
