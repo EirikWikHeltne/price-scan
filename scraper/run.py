@@ -3,7 +3,7 @@ import logging
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from db import get_active_products, save_resolved_url, bulk_insert_prices
-from scrapers import farmasiet, boots, vitusapotek, apotek1, oda, apotera, meny
+from scrapers import farmasiet, boots, vitusapotek, apotek1, oda, apotera
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
@@ -14,11 +14,10 @@ SCRAPERS = {
     "apotek1":     apotek1,
     "oda":         oda,
     "apotera":     apotera,
-    "meny":        meny,
 }
 
 # Grocery retailers only scrape these categories (pharmacy retailers get all)
-GROCERY_SCRAPERS = {"oda", "meny"}
+GROCERY_SCRAPERS = {"oda"}
 GROCERY_CATEGORIES = {"Paracetamol", "Ibuprofen"}
 
 MAX_WORKERS = 4  # run up to 4 scrapers in parallel

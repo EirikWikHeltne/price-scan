@@ -1,11 +1,10 @@
--- Migration: add ODA, Apotera, and Meny retailers
+-- Migration: add ODA and Apotera retailers
 -- Run this against your existing Supabase project.
 
 -- 1. New URL columns on produkter
 alter table public.produkter
   add column if not exists url_oda     text,
-  add column if not exists url_apotera text,
-  add column if not exists url_meny    text;
+  add column if not exists url_apotera text;
 
 -- 2. Expand the butikk check constraint on priser
 alter table public.priser
@@ -13,7 +12,7 @@ alter table public.priser
 
 alter table public.priser
   add constraint priser_butikk_check
-  check (butikk in ('farmasiet','boots','vitusapotek','apotek1','oda','apotera','meny'));
+  check (butikk in ('farmasiet','boots','vitusapotek','apotek1','oda','apotera'));
 
 -- 3. Recreate prissammenligning view with new retailer columns
 create or replace view public.prissammenligning as
@@ -25,7 +24,6 @@ select
   max(case when pr.butikk = 'apotek1'     then pr.pris end) as apotek1,
   max(case when pr.butikk = 'oda'         then pr.pris end) as oda,
   max(case when pr.butikk = 'apotera'     then pr.pris end) as apotera,
-  max(case when pr.butikk = 'meny'        then pr.pris end) as meny,
   min(pr.pris) as laveste_pris,
   max(pr.pris) as hoyeste_pris,
   max(pr.scraped_at) as sist_oppdatert

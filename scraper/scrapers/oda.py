@@ -24,6 +24,28 @@ Object.defineProperty(navigator, 'languages', {get: () => ['nb-NO','nb','no','en
 """
 
 
+_api_available = True  # circuit breaker: skip API after first 403
+
+
+def _dismiss_cookie_banner(page):
+    """Try to dismiss cookie consent banner if present."""
+    for selector in [
+        "button:has-text('Aksepter')", "button:has-text('Godta')",
+        "button:has-text('Godkjenn')", "button:has-text('Accept')",
+        "button:has-text('OK')", "button:has-text('Tillat')",
+        "[id*='cookie'] button", "[class*='cookie'] button",
+        "[id*='consent'] button", "[class*='consent'] button",
+    ]:
+        try:
+            btn = page.query_selector(selector)
+            if btn and btn.is_visible():
+                btn.click()
+                page.wait_for_timeout(500)
+                return
+        except Exception:
+            pass
+
+
 def _safe_url(href):
     url = href if href.startswith("http") else BASE + href
     try:
@@ -37,11 +59,18 @@ def _safe_url(href):
 
 def _search_url(query):
     """Search ODA API for a product, return product page URL if found."""
+    global _api_available
+    if not _api_available:
+        return None
     try:
         r = requests.get(
             f"{API_BASE}/search/?q={quote(query)}",
-            headers=_REQ_HEADERS, timeout=12
+            headers=_REQ_HEADERS, timeout=5
         )
+        if r.status_code == 403:
+            print("  [oda] API returned 403, disabling API calls")
+            _api_available = False
+            return None
         if r.status_code == 200:
             data = r.json()
             # Results may be nested under 'items' or 'results'
@@ -77,7 +106,19 @@ def _extract_price_from_html(html):
                         return pris
         except Exception:
             pass
-    # Layer 2: generic "price" key in page source
+    # Layer 2: __NEXT_DATA__
+    next_match = re.search(r'<script\s+id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
+    if next_match:
+        try:
+            nd = json.loads(next_match.group(1))
+            props_str = json.dumps(nd)
+            for pm in re.findall(r'"price"\s*:\s*"?([\d]+(?:[.,]\d+)?)"?', props_str):
+                val = float(pm.replace(",", "."))
+                if 1 < val < 10000:
+                    return val
+        except Exception:
+            pass
+    # Layer 3: generic "price" key in page source
     m = re.search(r'"price"\s*:\s*"?([\d]+(?:[.,]\d+)?)"?', html)
     if m:
         try:
@@ -107,7 +148,19 @@ def _extract_price_from_page(page):
                         return pris
         except Exception:
             pass
-    # Layer 2: data-testid
+    # Layer 2: __NEXT_DATA__
+    next_data_el = page.query_selector("script#__NEXT_DATA__")
+    if next_data_el:
+        try:
+            nd = json.loads(next_data_el.inner_text())
+            props_str = json.dumps(nd)
+            for pm in re.findall(r'"price"\s*:\s*"?([\d]+(?:[.,]\d+)?)"?', props_str):
+                val = float(pm.replace(",", "."))
+                if 1 < val < 10000:
+                    return val
+        except Exception:
+            pass
+    # Layer 3: data-testid
     for sel in ["[data-testid*='price']", "[data-testid*='Price']"]:
         el = page.query_selector(sel)
         if el:
@@ -125,7 +178,7 @@ def _extract_price_from_page(page):
                 val = float(m.group(1))
                 if val > 0:
                     return val
-    # Layer 3: CSS class selectors
+    # Layer 4: CSS class selectors
     for sel in ["[class*='price']", "[class*='Price']", "[class*='pris']", "[class*='Pris']"]:
         el = page.query_selector(sel)
         if el:
@@ -135,7 +188,7 @@ def _extract_price_from_page(page):
                 val = float(m.group(1))
                 if val > 0:
                     return val
-    # Layer 4: regex on full page source
+    # Layer 5: regex on full page source
     m = re.search(r'"price"\s*:\s*"?([\d]+(?:[.,]\d+)?)"?', page.content())
     if m:
         try:
@@ -149,6 +202,9 @@ def _extract_price_from_page(page):
 
 def _fetch_price_via_api(url):
     """Try to fetch price from ODA product API given a product page URL."""
+    global _api_available
+    if not _api_available:
+        return None, None
     m = re.search(r'/products/(\d+)', url)
     if not m:
         return None, None
@@ -156,8 +212,12 @@ def _fetch_price_via_api(url):
     try:
         r = requests.get(
             f"{API_BASE}/products/{pid}/",
-            headers=_REQ_HEADERS, timeout=12
+            headers=_REQ_HEADERS, timeout=5
         )
+        if r.status_code == 403:
+            print("  [oda] product API returned 403, disabling API calls")
+            _api_available = False
+            return None, None
         if r.status_code == 200:
             d = r.json()
             price_obj = d.get("current_price") or {}
@@ -208,20 +268,31 @@ def run(products):
                 page = None
                 try:
                     page = context.new_page()
-                    page.goto(
-                        f"{BASE}/no/search/?q={quote(prod['varenummer'])}",
-                        timeout=12000
-                    )
-                    try:
-                        page.wait_for_selector("a[href*='/no/products/']", timeout=8000)
-                    except Exception:
-                        pass
-                    link = page.query_selector("a[href*='/no/products/']")
-                    if link:
-                        href = link.get_attribute("href")
-                        url = _safe_url(href)
-                        if url:
-                            resolved[prod["varenummer"]] = url
+                    # Try varenummer first, then product name
+                    search_queries = [prod["varenummer"]]
+                    if prod.get("produkt"):
+                        search_queries.append(prod["produkt"])
+                    for query in search_queries:
+                        page.goto(
+                            f"{BASE}/no/search/?q={quote(query)}",
+                            timeout=15000
+                        )
+                        _dismiss_cookie_banner(page)
+                        try:
+                            page.wait_for_load_state("networkidle", timeout=10000)
+                        except Exception:
+                            pass
+                        try:
+                            page.wait_for_selector("a[href*='/no/products/']", timeout=8000)
+                        except Exception:
+                            pass
+                        link = page.query_selector("a[href*='/no/products/']")
+                        if link:
+                            href = link.get_attribute("href")
+                            url = _safe_url(href)
+                            if url:
+                                resolved[prod["varenummer"]] = url
+                                break
                     page.close()
                 except Exception as e:
                     print(f"  [oda] search error {prod['varenummer']}: {e}")
@@ -252,10 +323,15 @@ def run(products):
                 page = None
                 try:
                     page = context.new_page()
-                    page.goto(url, timeout=12000)
+                    page.goto(url, timeout=15000)
+                    _dismiss_cookie_banner(page)
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=10000)
+                    except Exception:
+                        pass
                     try:
                         page.wait_for_selector(
-                            "script[type='application/ld+json'], [data-testid*='price'], [class*='price']",
+                            "script[type='application/ld+json'], script#__NEXT_DATA__, [data-testid*='price'], [class*='price']",
                             timeout=5000
                         )
                     except Exception:

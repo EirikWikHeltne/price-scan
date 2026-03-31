@@ -1,6 +1,6 @@
 # Karo Price Scan
 
-Daily price monitoring across 4 Norwegian pharmacy chains: Apotek 1, Vitusapotek, Boots, and Farmasiet.
+Daily price monitoring across 6 Norwegian pharmacy and grocery retailers: Apotek 1, Vitusapotek, Boots, Farmasiet, Oda, and Apotera.
 
 Prices are scraped every night at 02:00 UTC and stored in Supabase. The scraper uses plain HTTP requests where possible, with Playwright as a fallback for JavaScript-rendered pages.
 
@@ -47,7 +47,7 @@ To stop scraping a product without deleting its price history, set `aktiv = fals
 
 ## How it works
 
-The GitHub Actions workflow (`.github/workflows/daily.yml`) runs every night at 02:00 UTC. It seeds products, then runs the scraper against all four chains in sequence.
+The GitHub Actions workflow (`.github/workflows/daily.yml`) runs every night at 02:00 UTC. It seeds products, then runs the scraper against all six retailers in parallel.
 
 Each scraper follows the same pattern:
 1. Check if a product URL is already cached in the `produkter` table
@@ -69,7 +69,9 @@ Each scraper follows the same pattern:
 │   │   ├── apotek1.py            # Sitemap + requests + Playwright
 │   │   ├── vitusapotek.py        # Playwright
 │   │   ├── boots.py              # requests + BeautifulSoup
-│   │   └── farmasiet.py          # requests + Playwright fallback
+│   │   ├── farmasiet.py          # requests + Playwright fallback
+│   │   ├── oda.py                # API + Playwright (grocery)
+│   │   └── apotera.py            # Playwright
 │   └── scripts/
 │       ├── products.csv          # Product list — edit this to add/remove products
 │       └── seed_products.py      # Upserts products.csv into Supabase

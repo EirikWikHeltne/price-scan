@@ -1,4 +1,4 @@
-"""Apotera.no — requests-first price extraction, Playwright fallback."""
+"""Apotera.no — Playwright-based price extraction."""
 import re, time, json, requests
 from urllib.parse import quote, urlparse
 from playwright.sync_api import sync_playwright
@@ -32,6 +32,25 @@ def _safe_url(href):
     except Exception:
         pass
     return None
+
+
+def _dismiss_cookie_banner(page):
+    """Try to dismiss cookie consent banner if present."""
+    for selector in [
+        "button:has-text('Aksepter')", "button:has-text('Godta')",
+        "button:has-text('Godkjenn')", "button:has-text('Accept')",
+        "button:has-text('OK')", "button:has-text('Tillat')",
+        "[id*='cookie'] button", "[class*='cookie'] button",
+        "[id*='consent'] button", "[class*='consent'] button",
+    ]:
+        try:
+            btn = page.query_selector(selector)
+            if btn and btn.is_visible():
+                btn.click()
+                page.wait_for_timeout(500)
+                return
+        except Exception:
+            pass
 
 
 def _extract_price_from_html(html):
@@ -165,38 +184,57 @@ def run(products):
                 page = None
                 try:
                     page = context.new_page()
-                    # Try multiple search URL patterns
-                    for search_url in [
-                        f"{BASE}/search?q={quote(prod['varenummer'])}",
-                        f"{BASE}/search/?q={quote(prod['varenummer'])}",
-                        f"{BASE}/catalogsearch/result/?q={quote(prod['varenummer'])}",
-                        f"{BASE}/sok?q={quote(prod['varenummer'])}",
-                    ]:
-                        try:
-                            resp = page.goto(search_url, timeout=10000)
-                            if resp and resp.status < 400:
-                                break
-                        except Exception:
-                            pass
+                    # Try multiple search URL patterns and query terms
+                    search_queries = [prod["varenummer"]]
+                    if prod.get("produkt"):
+                        search_queries.append(prod["produkt"])
+                    found = False
+                    for query in search_queries:
+                        if found:
+                            break
+                        for search_url in [
+                            f"{BASE}/sok?q={quote(query)}",
+                            f"{BASE}/search?q={quote(query)}",
+                            f"{BASE}/catalogsearch/result/?q={quote(query)}",
+                        ]:
+                            try:
+                                resp = page.goto(search_url, timeout=12000)
+                                if resp and resp.status < 400:
+                                    found = True
+                                    break
+                            except Exception:
+                                pass
+                    _dismiss_cookie_banner(page)
                     try:
-                        page.wait_for_load_state("domcontentloaded", timeout=8000)
+                        page.wait_for_load_state("networkidle", timeout=8000)
                     except Exception:
                         pass
                     # Broad scan: collect all hrefs and pick first that looks like a product page
                     all_links = page.query_selector_all("a[href]")
-                    nav_skip = {"/", "/search", "/search/", "/sok", "/logg-inn", "/handlekurv"}
+                    nav_skip = {
+                        "/", "/search", "/search/", "/sok", "/logg-inn", "/handlekurv",
+                        "/om-oss", "/kontakt", "/vilkar", "/personvern", "/cookies",
+                        "/kundeservice", "/faq", "/frakt", "/retur", "/min-side",
+                        "/kampanjer", "/tilbud", "/kategorier", "/merker",
+                    }
+                    nav_prefixes = {"kategori", "merke", "brand", "category", "info", "hjelp", "help", "sok", "search"}
                     for link in all_links:
                         href = link.get_attribute("href") or ""
                         # Skip nav/utility links
-                        if not href or href in nav_skip or href.startswith("#"):
+                        if not href or href in nav_skip or href.startswith("#") or href.startswith("javascript:"):
                             continue
                         candidate = _safe_url(href)
                         if not candidate:
                             continue
                         path = urlparse(candidate).path
-                        # Accept paths that look like product pages (have at least 2 segments)
                         segments = [s for s in path.strip("/").split("/") if s]
-                        if len(segments) >= 2:
+                        if not segments:
+                            continue
+                        # Skip known non-product prefixes
+                        if segments[0].lower() in nav_prefixes:
+                            continue
+                        # Accept product-like paths (1+ segments with a slug)
+                        if len(segments) >= 1 and len(segments[0]) > 5:
                             url = candidate
                             resolved[prod["varenummer"]] = url
                             break
@@ -216,40 +254,35 @@ def run(products):
                 results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": None, "pa_lager": None})
                 continue
 
-            # Fetch price: try plain HTTP first, Playwright fallback
+            # Fetch price via Playwright (Apotera blocks plain HTTP with 403)
             pris = None
             lager = None
+            page = None
             try:
-                r = requests.get(url, headers=_REQ_HEADERS, timeout=10)
-                if r.status_code == 200:
-                    pris = _extract_price_from_html(r.text)
-                    lager = "på lager" in r.text.lower()
-            except Exception as e:
-                print(f"  [apotera] requests error {prod['varenummer']}: {e}")
-
-            if pris is None:
-                page = None
+                page = context.new_page()
+                page.goto(url, timeout=15000)
+                _dismiss_cookie_banner(page)
                 try:
-                    page = context.new_page()
-                    page.goto(url, timeout=12000)
+                    page.wait_for_load_state("networkidle", timeout=8000)
+                except Exception:
+                    pass
+                try:
+                    page.wait_for_selector(
+                        "script[type='application/ld+json'], [data-testid*='price'], [class*='price'], [class*='pris']",
+                        timeout=5000
+                    )
+                except Exception:
+                    pass
+                pris = _extract_price_from_page(page)
+                lager = "på lager" in page.content().lower()
+                page.close()
+            except Exception as e:
+                print(f"  [apotera] browser error {prod['varenummer']}: {e}")
+                if page:
                     try:
-                        page.wait_for_selector(
-                            "script[type='application/ld+json'], [data-testid*='price'], [class*='price']",
-                            timeout=5000
-                        )
+                        page.close()
                     except Exception:
                         pass
-                    pris = _extract_price_from_page(page)
-                    if lager is None:
-                        lager = "på lager" in page.content().lower()
-                    page.close()
-                except Exception as e:
-                    print(f"  [apotera] browser error {prod['varenummer']}: {e}")
-                    if page:
-                        try:
-                            page.close()
-                        except Exception:
-                            pass
 
             print(f"  [apotera] {prod['varenummer']}: {pris}")
             results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": pris, "pa_lager": lager})
