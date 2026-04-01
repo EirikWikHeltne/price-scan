@@ -2,6 +2,7 @@
 import re, time, json, requests
 from urllib.parse import quote, urlparse
 from playwright.sync_api import sync_playwright
+from playwright_stealth import Stealth
 
 BUTIKK       = "apotera"
 BASE         = "https://www.apotera.no"
@@ -9,18 +10,17 @@ ALLOWED_HOST = "www.apotera.no"
 
 _UA = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
 _REQ_HEADERS = {
     "User-Agent": _UA,
     "Accept-Language": "nb-NO,nb;q=0.9,no;q=0.8",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
-_STEALTH = """
-Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-window.chrome = {runtime: {}};
-Object.defineProperty(navigator, 'languages', {get: () => ['nb-NO','nb','no','en-US','en']});
-"""
+_stealth = Stealth(
+    navigator_languages_override=("nb-NO", "nb"),
+    navigator_platform_override="Linux x86_64",
+)
 
 
 def _safe_url(href):
@@ -73,7 +73,27 @@ def _extract_price_from_html(html):
                         return pris
         except Exception:
             pass
-    # Layer 2: data-testid content attribute
+    # Layer 2: Magento meta itemprop="price"
+    m = re.search(r'itemprop=["\']price["\'][^>]*content=["\']([0-9.,]+)["\']', html, re.IGNORECASE)
+    if not m:
+        m = re.search(r'content=["\']([0-9.,]+)["\'][^>]*itemprop=["\']price["\']', html, re.IGNORECASE)
+    if m:
+        try:
+            pris = float(m.group(1).replace(",", "."))
+            if pris > 0:
+                return pris
+        except Exception:
+            pass
+    # Layer 2b: Magento data-price-amount
+    m = re.search(r'data-price-amount=["\']([0-9.,]+)["\']', html)
+    if m:
+        try:
+            pris = float(m.group(1).replace(",", "."))
+            if pris > 0:
+                return pris
+        except Exception:
+            pass
+    # Layer 3: data-testid content attribute
     m = re.search(
         r'data-testid=["\'][^"\']*price[^"\']*["\'][^>]*content=["\']([0-9.]+)["\']',
         html, re.IGNORECASE
@@ -118,7 +138,38 @@ def _extract_price_from_page(page):
                         return pris
         except Exception:
             pass
-    # Layer 2: data-testid
+    # Layer 2: Magento price selectors
+    # meta itemprop="price"
+    meta_price = page.query_selector("meta[itemprop='price']")
+    if meta_price:
+        content = meta_price.get_attribute("content")
+        if content:
+            try:
+                pris = float(content.replace(",", "."))
+                if pris > 0:
+                    return pris
+            except Exception:
+                pass
+    # data-price-amount attribute (Magento price wrapper)
+    dpa = page.query_selector("[data-price-amount]")
+    if dpa:
+        try:
+            pris = float(dpa.get_attribute("data-price-amount"))
+            if pris > 0:
+                return pris
+        except Exception:
+            pass
+    # .price-box .price or span.price (Magento default)
+    for sel in [".price-box .price", "span.price", ".price-final_price .price"]:
+        el = page.query_selector(sel)
+        if el:
+            raw = el.inner_text().replace("kr", "").replace("\xa0", "").replace(",", ".").strip()
+            m = re.search(r"(\d+\.?\d*)", raw)
+            if m:
+                val = float(m.group(1))
+                if val > 0:
+                    return val
+    # Layer 3: data-testid
     for sel in ["[data-testid*='price']", "[data-testid*='Price']"]:
         el = page.query_selector(sel)
         if el:
@@ -169,12 +220,14 @@ def run(products):
             user_agent=_UA,
             locale="nb-NO",
             timezone_id="Europe/Oslo",
+            viewport={"width": 1920, "height": 1080},
+            screen={"width": 1920, "height": 1080},
             extra_http_headers={
                 "Accept-Language": "nb-NO,nb;q=0.9,no;q=0.8",
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             }
         )
-        context.add_init_script(_STEALTH)
+        _stealth.apply_stealth_sync(context)
 
         for prod in products:
             url = prod.get("url_apotera")
