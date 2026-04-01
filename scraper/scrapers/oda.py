@@ -2,6 +2,7 @@
 import re, time, json, requests
 from urllib.parse import quote, urlparse
 from playwright.sync_api import sync_playwright
+from playwright_stealth import Stealth
 
 BUTIKK       = "oda"
 BASE         = "https://oda.com"
@@ -10,18 +11,17 @@ ALLOWED_HOST = "oda.com"
 
 _UA = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
 _REQ_HEADERS = {
     "User-Agent": _UA,
     "Accept-Language": "nb-NO,nb;q=0.9,no;q=0.8",
     "Accept": "application/json, text/html, */*;q=0.8",
 }
-_STEALTH = """
-Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-window.chrome = {runtime: {}};
-Object.defineProperty(navigator, 'languages', {get: () => ['nb-NO','nb','no','en-US','en']});
-"""
+_stealth = Stealth(
+    navigator_languages_override=("nb-NO", "nb"),
+    navigator_platform_override="Linux x86_64",
+)
 
 
 _api_available = True  # circuit breaker: skip API after first 403
@@ -246,11 +246,13 @@ def run(products):
             user_agent=_UA,
             locale="nb-NO",
             timezone_id="Europe/Oslo",
+            viewport={"width": 1920, "height": 1080},
+            screen={"width": 1920, "height": 1080},
             extra_http_headers={
                 "Accept-Language": "nb-NO,nb;q=0.9,no;q=0.8",
             }
         )
-        context.add_init_script(_STEALTH)
+        _stealth.apply_stealth_sync(context)
 
         for prod in products:
             url = prod.get("url_oda")
@@ -323,20 +325,38 @@ def run(products):
                 page = None
                 try:
                     page = context.new_page()
+                    # Intercept API responses for price data
+                    captured_price = {}
+                    def _on_response(response):
+                        try:
+                            ct = response.headers.get("content-type", "")
+                            if "json" in ct and response.status == 200:
+                                body = response.text()
+                                for pm in re.findall(r'"(?:price|gross_price|current_price)"\s*:\s*"?([\d]+(?:[.,]\d+)?)"?', body):
+                                    val = float(pm.replace(",", "."))
+                                    if 1 < val < 10000 and "price" not in captured_price:
+                                        captured_price["price"] = val
+                        except Exception:
+                            pass
+                    page.on("response", _on_response)
                     page.goto(url, timeout=15000)
                     _dismiss_cookie_banner(page)
                     try:
                         page.wait_for_load_state("networkidle", timeout=10000)
                     except Exception:
                         pass
-                    try:
-                        page.wait_for_selector(
-                            "script[type='application/ld+json'], script#__NEXT_DATA__, [data-testid*='price'], [class*='price']",
-                            timeout=5000
-                        )
-                    except Exception:
-                        pass
-                    pris = _extract_price_from_page(page)
+                    # Check intercepted API responses first
+                    if "price" in captured_price:
+                        pris = captured_price["price"]
+                    else:
+                        try:
+                            page.wait_for_selector(
+                                "script[type='application/ld+json'], script#__NEXT_DATA__, [data-testid*='price'], [class*='price']",
+                                timeout=5000
+                            )
+                        except Exception:
+                            pass
+                        pris = _extract_price_from_page(page)
                     if lager is None:
                         lager = "på lager" in page.content().lower()
                     page.close()
