@@ -12,8 +12,9 @@ ALTER TABLE public.priser
   ADD CONSTRAINT priser_butikk_check
   CHECK (butikk IN ('farmasiet','boots','vitusapotek','apotek1','oda','apotera'));
 
--- 4. Recreate view without meny column
-CREATE OR REPLACE VIEW public.prissammenligning AS
+-- 4. Recreate view without meny column (must DROP — CREATE OR REPLACE cannot remove columns)
+DROP VIEW IF EXISTS public.prissammenligning;
+CREATE VIEW public.prissammenligning AS
 SELECT
   p.id, p.varenummer, p.merke, p.produkt, p.kategori,
   max(case when pr.butikk = 'farmasiet'   then pr.pris end) as farmasiet,
