@@ -1,6 +1,7 @@
-"""Apotera.no — Playwright-based price extraction."""
+"""Apotera.no — Magento 2 store. HTTP-first with Playwright fallback."""
 import re, time, json, requests
 from urllib.parse import quote, urlparse
+from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 from playwright_stealth import Stealth
 
@@ -34,12 +35,215 @@ def _safe_url(href):
     return None
 
 
+# ---------------------------------------------------------------------------
+# URL resolution via HTTP (Magento catalogsearch)
+# ---------------------------------------------------------------------------
+
+def _search_url_http(varenummer: str, produkt: str = "") -> str | None:
+    """Search Apotera via Magento catalogsearch and find a product link."""
+    # Try varenummer first (SKU match), then product name
+    queries = [varenummer]
+    if produkt:
+        queries.append(produkt)
+
+    for query in queries:
+        try:
+            r = requests.get(
+                f"{BASE}/catalogsearch/result/?q={quote(query)}",
+                headers=_REQ_HEADERS, timeout=12
+            )
+            if r.status_code != 200:
+                continue
+            soup = BeautifulSoup(r.text, "lxml")
+
+            # Magento product list: look for product links in the results grid
+            # Typical Magento selectors: .product-item a, .product-item-link
+            for link in soup.select("a.product-item-link, .product-item a[href], .products-list a[href]"):
+                href = link.get("href", "")
+                url = _safe_url(href)
+                if url and _is_product_url(url):
+                    return url
+
+            # Broader fallback: any link on the page that looks like a product
+            for link in soup.find_all("a", href=True):
+                href = link["href"]
+                url = _safe_url(href)
+                if url and _is_product_url(url):
+                    return url
+        except Exception as e:
+            print(f"  [apotera] search HTTP error for {query}: {e}")
+    return None
+
+
+def _is_product_url(url: str) -> bool:
+    """Heuristic: Apotera product URLs are clean slugs with multiple hyphenated words.
+    They do NOT contain paths like /catalogsearch/, /customer/, /checkout/ etc."""
+    path = urlparse(url).path.strip("/")
+    if not path:
+        return False
+    # Reject known non-product paths
+    non_product = {
+        "catalogsearch", "customer", "checkout", "search", "sok",
+        "om-apotera", "kontakt-oss", "personvern", "salgsbetingelser",
+        "cookies", "privacy-policy-cookie-restriction-mode",
+        "ofte-stilte-sporsmal", "frakt-og-levering", "retur-og-reklamasjon",
+        "tips-og-rad", "kjop-reseptvare", "varemerker", "apotera-i-media",
+    }
+    segments = path.split("/")
+    if segments[0] in non_product:
+        return False
+    # Product slugs are typically 4+ words separated by hyphens
+    # e.g. "paracet-500-mg-tabletter-20-stk"
+    if len(path) > 10 and "-" in path:
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Price extraction from HTML (Magento 2 patterns)
+# ---------------------------------------------------------------------------
+
+def _extract_price_from_html(html: str) -> float | None:
+    """Extract price from Magento 2 server-rendered HTML."""
+    soup = BeautifulSoup(html, "lxml")
+
+    # Layer 1: JSON-LD (most reliable)
+    for tag in soup.find_all("script", type="application/ld+json"):
+        try:
+            d = json.loads(tag.string or "")
+            items = d if isinstance(d, list) else [d]
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                offer = item.get("offers")
+                if offer:
+                    if isinstance(offer, list):
+                        offer = offer[0]
+                    pris = float(offer.get("price", 0)) or None
+                    if pris and pris > 0:
+                        return pris
+        except Exception:
+            pass
+
+    # Layer 2: Magento data-price-amount attribute (very reliable)
+    el = soup.find(attrs={"data-price-amount": True})
+    if el:
+        try:
+            pris = float(el["data-price-amount"])
+            if pris > 0:
+                return pris
+        except (ValueError, TypeError):
+            pass
+
+    # Layer 3: meta itemprop="price"
+    meta = soup.find("meta", attrs={"itemprop": "price"})
+    if meta and meta.get("content"):
+        try:
+            pris = float(meta["content"].replace(",", "."))
+            if pris > 0:
+                return pris
+        except (ValueError, TypeError):
+            pass
+
+    # Layer 4: Magento price box CSS selectors
+    for sel in [".price-box .price", "span.price", ".price-final_price .price"]:
+        el = soup.select_one(sel)
+        if el:
+            raw = el.get_text().replace("kr", "").replace("\xa0", "").replace(",", ".").strip()
+            m = re.search(r"(\d+\.?\d*)", raw)
+            if m:
+                val = float(m.group(1))
+                if val > 0:
+                    return val
+
+    # Layer 5: "price" key in page source (JSON embedded in scripts)
+    m = re.search(r'"price"\s*:\s*"?([\d]+(?:[.,]\d+)?)"?', html)
+    if m:
+        try:
+            pris = float(m.group(1).replace(",", "."))
+            if pris > 0:
+                return pris
+        except Exception:
+            pass
+
+    return None
+
+
+def _extract_stock_from_html(html: str) -> bool | None:
+    """Check stock status from HTML."""
+    lower = html.lower()
+    if "på lager" in lower or "in stock" in lower or '"instock"' in lower:
+        return True
+    if "ikke på lager" in lower or "utsolgt" in lower or '"outofstock"' in lower:
+        return False
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Playwright fallback for price extraction
+# ---------------------------------------------------------------------------
+
+def _extract_price_playwright(page) -> float | None:
+    """Extract price from a Playwright-rendered Magento page."""
+    # data-price-amount (Magento standard)
+    dpa = page.query_selector("[data-price-amount]")
+    if dpa:
+        try:
+            pris = float(dpa.get_attribute("data-price-amount"))
+            if pris > 0:
+                return pris
+        except Exception:
+            pass
+
+    # meta itemprop="price"
+    meta = page.query_selector("meta[itemprop='price']")
+    if meta:
+        content = meta.get_attribute("content")
+        if content:
+            try:
+                pris = float(content.replace(",", "."))
+                if pris > 0:
+                    return pris
+            except Exception:
+                pass
+
+    # JSON-LD
+    for tag in page.query_selector_all("script[type='application/ld+json']"):
+        try:
+            d = json.loads(tag.inner_text())
+            items = d if isinstance(d, list) else [d]
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                offer = item.get("offers")
+                if offer:
+                    if isinstance(offer, list):
+                        offer = offer[0]
+                    pris = float(offer.get("price", 0)) or None
+                    if pris and pris > 0:
+                        return pris
+        except Exception:
+            pass
+
+    # Price box CSS
+    for sel in [".price-box .price", "span.price", ".price-final_price .price"]:
+        el = page.query_selector(sel)
+        if el:
+            raw = el.inner_text().replace("kr", "").replace("\xa0", "").replace(",", ".").strip()
+            m = re.search(r"(\d+\.?\d*)", raw)
+            if m:
+                val = float(m.group(1))
+                if val > 0:
+                    return val
+
+    return None
+
+
 def _dismiss_cookie_banner(page):
-    """Try to dismiss cookie consent banner if present."""
+    """Dismiss Magento cookie banner if present."""
     for selector in [
         "button:has-text('Aksepter')", "button:has-text('Godta')",
-        "button:has-text('Godkjenn')", "button:has-text('Accept')",
-        "button:has-text('OK')", "button:has-text('Tillat')",
+        "button:has-text('Godkjenn')", "button:has-text('OK')",
         "[id*='cookie'] button", "[class*='cookie'] button",
         "[id*='consent'] button", "[class*='consent'] button",
     ]:
@@ -53,294 +257,95 @@ def _dismiss_cookie_banner(page):
             pass
 
 
-def _extract_price_from_html(html):
-    """Extract price from server-rendered HTML."""
-    # Layer 1: JSON-LD
-    for block in re.findall(
-        r'<script[^>]+application/ld\+json[^>]*>(.*?)</script>', html, re.DOTALL
-    ):
-        try:
-            d = json.loads(block)
-            for item in (d if isinstance(d, list) else [d]):
-                if not isinstance(item, dict):
-                    continue
-                offer = item.get("offers")
-                if offer:
-                    if isinstance(offer, list):
-                        offer = offer[0]
-                    pris = float(offer.get("price", 0)) or None
-                    if pris:
-                        return pris
-        except Exception:
-            pass
-    # Layer 2: Magento meta itemprop="price"
-    m = re.search(r'itemprop=["\']price["\'][^>]*content=["\']([0-9.,]+)["\']', html, re.IGNORECASE)
-    if not m:
-        m = re.search(r'content=["\']([0-9.,]+)["\'][^>]*itemprop=["\']price["\']', html, re.IGNORECASE)
-    if m:
-        try:
-            pris = float(m.group(1).replace(",", "."))
-            if pris > 0:
-                return pris
-        except Exception:
-            pass
-    # Layer 2b: Magento data-price-amount
-    m = re.search(r'data-price-amount=["\']([0-9.,]+)["\']', html)
-    if m:
-        try:
-            pris = float(m.group(1).replace(",", "."))
-            if pris > 0:
-                return pris
-        except Exception:
-            pass
-    # Layer 3: data-testid content attribute
-    m = re.search(
-        r'data-testid=["\'][^"\']*price[^"\']*["\'][^>]*content=["\']([0-9.]+)["\']',
-        html, re.IGNORECASE
-    )
-    if not m:
-        m = re.search(
-            r'content=["\']([0-9.]+)["\'][^>]*data-testid=["\'][^"\']*price[^"\']*["\']',
-            html, re.IGNORECASE
-        )
-    if m:
-        try:
-            return float(m.group(1))
-        except Exception:
-            pass
-    # Layer 3: generic "price" key in page source
-    m = re.search(r'"price"\s*:\s*"?([\d]+(?:[.,]\d+)?)"?', html)
-    if m:
-        try:
-            pris = float(m.group(1).replace(",", "."))
-            if pris > 0:
-                return pris
-        except Exception:
-            pass
-    return None
-
-
-def _extract_price_from_page(page):
-    """Extract price from a rendered Playwright page."""
-    # Layer 1: JSON-LD
-    for tag in page.query_selector_all("script[type='application/ld+json']"):
-        try:
-            d = json.loads(tag.inner_text())
-            for item in (d if isinstance(d, list) else [d]):
-                if not isinstance(item, dict):
-                    continue
-                offer = item.get("offers")
-                if offer:
-                    if isinstance(offer, list):
-                        offer = offer[0]
-                    pris = float(offer.get("price", 0)) or None
-                    if pris:
-                        return pris
-        except Exception:
-            pass
-    # Layer 2: Magento price selectors
-    # meta itemprop="price"
-    meta_price = page.query_selector("meta[itemprop='price']")
-    if meta_price:
-        content = meta_price.get_attribute("content")
-        if content:
-            try:
-                pris = float(content.replace(",", "."))
-                if pris > 0:
-                    return pris
-            except Exception:
-                pass
-    # data-price-amount attribute (Magento price wrapper)
-    dpa = page.query_selector("[data-price-amount]")
-    if dpa:
-        try:
-            pris = float(dpa.get_attribute("data-price-amount"))
-            if pris > 0:
-                return pris
-        except Exception:
-            pass
-    # .price-box .price or span.price (Magento default)
-    for sel in [".price-box .price", "span.price", ".price-final_price .price"]:
-        el = page.query_selector(sel)
-        if el:
-            raw = el.inner_text().replace("kr", "").replace("\xa0", "").replace(",", ".").strip()
-            m = re.search(r"(\d+\.?\d*)", raw)
-            if m:
-                val = float(m.group(1))
-                if val > 0:
-                    return val
-    # Layer 3: data-testid
-    for sel in ["[data-testid*='price']", "[data-testid*='Price']"]:
-        el = page.query_selector(sel)
-        if el:
-            content = el.get_attribute("content")
-            if content:
-                try:
-                    pris = float(content)
-                    if pris:
-                        return pris
-                except Exception:
-                    pass
-            raw = el.inner_text().replace("kr", "").replace(",", ".").strip()
-            m = re.search(r"(\d+\.?\d*)", raw)
-            if m:
-                return float(m.group(1))
-    # Layer 3: CSS class selectors
-    for sel in ["[class*='price']", "[class*='Price']", "[class*='pris']", "[class*='Pris']"]:
-        el = page.query_selector(sel)
-        if el:
-            raw = el.inner_text().replace("kr", "").replace(",", ".").strip()
-            m = re.search(r"(\d+\.?\d*)", raw)
-            if m:
-                return float(m.group(1))
-    # Layer 4: regex on full page source
-    m = re.search(r'"price"\s*:\s*"?([\d]+(?:[.,]\d+)?)"?', page.content())
-    if m:
-        try:
-            pris = float(m.group(1).replace(",", "."))
-            if pris > 0:
-                return pris
-        except Exception:
-            pass
-    return None
-
+# ---------------------------------------------------------------------------
+# Main run function
+# ---------------------------------------------------------------------------
 
 def run(products):
     results, resolved = [], {}
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-blink-features=AutomationControlled",
-                "--disable-dev-shm-usage",
-            ]
-        )
-        context = browser.new_context(
-            user_agent=_UA,
-            locale="nb-NO",
-            timezone_id="Europe/Oslo",
-            viewport={"width": 1920, "height": 1080},
-            screen={"width": 1920, "height": 1080},
-            extra_http_headers={
-                "Accept-Language": "nb-NO,nb;q=0.9,no;q=0.8",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            }
-        )
-        _stealth.apply_stealth_sync(context)
+    browser = None
 
-        for prod in products:
-            url = prod.get("url_apotera")
+    for prod in products:
+        url = prod.get("url_apotera")
 
-            # Resolve URL via browser search if not cached
-            if not url:
-                page = None
-                try:
-                    page = context.new_page()
-                    # Try multiple search URL patterns and query terms
-                    search_queries = [prod["varenummer"]]
-                    if prod.get("produkt"):
-                        search_queries.append(prod["produkt"])
-                    found = False
-                    for query in search_queries:
-                        if found:
-                            break
-                        for search_url in [
-                            f"{BASE}/sok?q={quote(query)}",
-                            f"{BASE}/search?q={quote(query)}",
-                            f"{BASE}/catalogsearch/result/?q={quote(query)}",
-                        ]:
-                            try:
-                                resp = page.goto(search_url, timeout=12000)
-                                if resp and resp.status < 400:
-                                    found = True
-                                    break
-                            except Exception:
-                                pass
-                    _dismiss_cookie_banner(page)
-                    try:
-                        page.wait_for_load_state("networkidle", timeout=8000)
-                    except Exception:
-                        pass
-                    # Broad scan: collect all hrefs and pick first that looks like a product page
-                    all_links = page.query_selector_all("a[href]")
-                    nav_skip = {
-                        "/", "/search", "/search/", "/sok", "/logg-inn", "/handlekurv",
-                        "/om-oss", "/kontakt", "/vilkar", "/personvern", "/cookies",
-                        "/kundeservice", "/faq", "/frakt", "/retur", "/min-side",
-                        "/kampanjer", "/tilbud", "/kategorier", "/merker",
-                    }
-                    nav_prefixes = {"kategori", "merke", "brand", "category", "info", "hjelp", "help", "sok", "search"}
-                    for link in all_links:
-                        href = link.get_attribute("href") or ""
-                        # Skip nav/utility links
-                        if not href or href in nav_skip or href.startswith("#") or href.startswith("javascript:"):
-                            continue
-                        candidate = _safe_url(href)
-                        if not candidate:
-                            continue
-                        path = urlparse(candidate).path
-                        segments = [s for s in path.strip("/").split("/") if s]
-                        if not segments:
-                            continue
-                        # Skip known non-product prefixes
-                        if segments[0].lower() in nav_prefixes:
-                            continue
-                        # Accept product-like paths (1+ segments with a slug)
-                        if len(segments) >= 1 and len(segments[0]) > 5:
-                            url = candidate
-                            resolved[prod["varenummer"]] = url
-                            break
-                    if not url:
-                        print(f"  [apotera] search found no product link for {prod['varenummer']} (url={page.url})")
-                    page.close()
-                except Exception as e:
-                    print(f"  [apotera] search error {prod['varenummer']}: {e}")
-                    if page:
-                        try:
-                            page.close()
-                        except Exception:
-                            pass
+        # Step 1: Resolve URL via HTTP search (fast, no browser)
+        if not url:
+            url = _search_url_http(prod["varenummer"], prod.get("produkt", ""))
+            if url:
+                resolved[prod["varenummer"]] = url
 
-            if not url:
-                print(f"  [apotera] no URL: {prod['varenummer']}")
-                results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": None, "pa_lager": None})
-                continue
+        if not url:
+            print(f"  [apotera] no URL: {prod['varenummer']}")
+            results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": None, "pa_lager": None})
+            continue
 
-            # Fetch price via Playwright (Apotera blocks plain HTTP with 403)
-            pris = None
-            lager = None
+        # Step 2: Fetch price via HTTP first (Magento renders server-side)
+        pris = None
+        lager = None
+        try:
+            r = requests.get(url, headers=_REQ_HEADERS, timeout=12)
+            if r.status_code == 200:
+                pris = _extract_price_from_html(r.text)
+                lager = _extract_stock_from_html(r.text)
+        except Exception as e:
+            print(f"  [apotera] HTTP error {prod['varenummer']}: {e}")
+
+        # Step 3: Playwright fallback only if HTTP failed
+        if pris is None:
+            if browser is None:
+                pw = sync_playwright().start()
+                browser = pw.chromium.launch(
+                    headless=True,
+                    args=["--no-sandbox", "--disable-blink-features=AutomationControlled",
+                           "--disable-dev-shm-usage"]
+                )
+                context = browser.new_context(
+                    user_agent=_UA, locale="nb-NO", timezone_id="Europe/Oslo",
+                    viewport={"width": 1920, "height": 1080},
+                    extra_http_headers={"Accept-Language": "nb-NO,nb;q=0.9,no;q=0.8"},
+                )
+                _stealth.apply_stealth_sync(context)
+
             page = None
             try:
                 page = context.new_page()
                 page.goto(url, timeout=15000)
                 _dismiss_cookie_banner(page)
                 try:
-                    page.wait_for_load_state("networkidle", timeout=8000)
-                except Exception:
-                    pass
-                try:
                     page.wait_for_selector(
-                        "script[type='application/ld+json'], [data-testid*='price'], [class*='price'], [class*='pris']",
-                        timeout=5000
+                        "[data-price-amount], meta[itemprop='price'], span.price, "
+                        "script[type='application/ld+json']",
+                        timeout=6000
                     )
                 except Exception:
                     pass
-                pris = _extract_price_from_page(page)
-                lager = "på lager" in page.content().lower()
+                pris = _extract_price_playwright(page)
+                if lager is None:
+                    content = page.content().lower()
+                    if "på lager" in content:
+                        lager = True
+                    elif "utsolgt" in content:
+                        lager = False
                 page.close()
             except Exception as e:
-                print(f"  [apotera] browser error {prod['varenummer']}: {e}")
+                print(f"  [apotera] Playwright error {prod['varenummer']}: {e}")
                 if page:
                     try:
                         page.close()
                     except Exception:
                         pass
 
-            print(f"  [apotera] {prod['varenummer']}: {pris}")
-            results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": pris, "pa_lager": lager})
-            time.sleep(0.1)
+        print(f"  [apotera] {prod['varenummer']}: {pris}")
+        results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": pris, "pa_lager": lager})
+        time.sleep(0.15)
 
-        context.close()
-        browser.close()
+    # Clean up browser only if it was started
+    if browser:
+        try:
+            context.close()
+            browser.close()
+            pw.stop()
+        except Exception:
+            pass
+
     return results, resolved
