@@ -27,6 +27,7 @@ create table public.priser (
 create index on priser (produkt_id);
 create index on priser (butikk);
 create index on priser (scraped_at desc);
+create index on priser (produkt_id, scraped_at desc);
 create index on produkter (kategori);
 create index on produkter (merke);
 
@@ -60,7 +61,25 @@ join (
 where p.aktiv = true
 group by p.id, p.varenummer, p.merke, p.produkt, p.kategori;
 
+create view prishistorikk as
+select
+  p.id          as produkt_id,
+  p.varenummer,
+  p.merke,
+  p.produkt,
+  p.kategori,
+  pr.butikk,
+  pr.pris,
+  pr.pa_lager,
+  pr.scraped_at,
+  pr.scraped_at::date as dato
+from produkter p
+join priser pr on pr.produkt_id = p.id
+order by p.id, pr.butikk, pr.scraped_at desc;
+
 alter table produkter enable row level security;
 alter table priser     enable row level security;
 create policy "Public read produkter" on produkter for select using (true);
 create policy "Public read priser"    on priser    for select using (true);
+
+grant select on public.prishistorikk to anon, authenticated;
