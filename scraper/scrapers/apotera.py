@@ -4,6 +4,7 @@ from urllib.parse import quote, urlparse
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 from playwright_stealth import Stealth
+from ._common import extract_stock
 
 BUTIKK       = "apotera"
 BASE         = "https://www.apotera.no"
@@ -169,16 +170,6 @@ def _extract_price_from_html(html: str) -> float | None:
     return None
 
 
-def _extract_stock_from_html(html: str) -> bool | None:
-    """Check stock status from HTML."""
-    lower = html.lower()
-    if "på lager" in lower or "in stock" in lower or '"instock"' in lower:
-        return True
-    if "ikke på lager" in lower or "utsolgt" in lower or '"outofstock"' in lower:
-        return False
-    return None
-
-
 # ---------------------------------------------------------------------------
 # Playwright fallback for price extraction
 # ---------------------------------------------------------------------------
@@ -286,7 +277,7 @@ def run(products):
             r = requests.get(url, headers=_REQ_HEADERS, timeout=12)
             if r.status_code == 200:
                 pris = _extract_price_from_html(r.text)
-                lager = _extract_stock_from_html(r.text)
+                lager = extract_stock(r.text)
         except Exception as e:
             print(f"  [apotera] HTTP error {prod['varenummer']}: {e}")
 
@@ -321,11 +312,7 @@ def run(products):
                     pass
                 pris = _extract_price_playwright(page)
                 if lager is None:
-                    content = page.content().lower()
-                    if "på lager" in content:
-                        lager = True
-                    elif "utsolgt" in content:
-                        lager = False
+                    lager = extract_stock(page.content())
                 page.close()
             except Exception as e:
                 print(f"  [apotera] Playwright error {prod['varenummer']}: {e}")
@@ -341,11 +328,8 @@ def run(products):
 
     # Clean up browser only if it was started
     if browser:
-        try:
-            context.close()
-            browser.close()
-            pw.stop()
-        except Exception:
-            pass
+        context.close()
+        browser.close()
+        pw.stop()
 
     return results, resolved

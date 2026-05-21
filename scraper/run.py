@@ -28,7 +28,7 @@ def _run_scraper(name, module, products):
     print(f"\n--- {name} ---")
     try:
         rows, resolved = module.run(products)
-        ok = sum(1 for r in rows if r["pris"])
+        ok = sum(1 for r in rows if r["pris"] is not None)
         print(f"  {name}: {ok}/{len(rows)} prices found")
         return name, rows, resolved
     except Exception as e:

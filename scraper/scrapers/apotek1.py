@@ -2,6 +2,7 @@
 import re, time, json, requests
 from urllib.parse import quote, urlparse
 from playwright.sync_api import sync_playwright
+from ._common import extract_stock
 
 BUTIKK       = "apotek1"
 BASE         = "https://www.apotek1.no"
@@ -246,7 +247,7 @@ def run(products):
                 r = requests.get(url, headers=_REQ_HEADERS, timeout=10)
                 if r.status_code == 200:
                     pris = _extract_price_from_html(r.text)
-                    lager = "på lager" in r.text.lower()
+                    lager = extract_stock(r.text)
             except Exception as e:
                 print(f"  [apotek1] requests error {prod['varenummer']}: {e}")
 
@@ -266,7 +267,7 @@ def run(products):
                         pass  # Continue and attempt extraction anyway
                     pris = _extract_price_from_page(page)
                     if lager is None:
-                        lager = "på lager" in page.content().lower()
+                        lager = extract_stock(page.content())
                     page.close()
                 except Exception as e:
                     print(f"  [apotek1] browser error {prod['varenummer']}: {e}")

@@ -2,6 +2,7 @@
 import re, time, json
 from urllib.parse import quote, urlparse
 from playwright.sync_api import sync_playwright
+from ._common import extract_stock
 
 BUTIKK       = "vitusapotek"
 BASE         = "https://www.vitusapotek.no"
@@ -52,7 +53,7 @@ def run(products):
                     print(f"  [vitusapotek] search error {prod['varenummer']}: {e}")
                     if page:
                         try: page.close()
-                        except: pass
+                        except Exception: pass
             if not url:
                 print(f"  [vitusapotek] no URL: {prod['varenummer']}")
                 results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": None, "pa_lager": None})
@@ -76,7 +77,7 @@ def run(products):
                         if isinstance(d, dict) and "offers" in d:
                             pris = float(d["offers"].get("price", 0)) or None
                             if pris: break
-                    except: pass
+                    except Exception: pass
                 if not pris:
                     for sel in ["[class*='price']","[class*='Price']","[data-testid*='price']"]:
                         el = page.query_selector(sel)
@@ -86,7 +87,7 @@ def run(products):
                             if m:
                                 pris = float(m.group(1))
                                 break
-                lager = "på lager" in page.content().lower()
+                lager = extract_stock(page.content())
                 page.close()
                 print(f"  [vitusapotek] {prod['varenummer']}: {pris}")
                 results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": pris, "pa_lager": lager})
@@ -95,7 +96,7 @@ def run(products):
                 print(f"  [vitusapotek] error {prod['varenummer']}: {e}")
                 if page:
                     try: page.close()
-                    except: pass
+                    except Exception: pass
                 results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": None, "pa_lager": None})
         context.close()
         browser.close()
