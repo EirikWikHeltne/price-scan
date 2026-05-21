@@ -3,6 +3,7 @@ import json, re, time
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import quote, urlparse
+from ._common import extract_stock
 
 BUTIKK       = "boots"
 BASE         = "https://www.boots.no"
@@ -39,6 +40,7 @@ def fetch_price(url):
     try:
         r = requests.get(url, headers=HEADS, timeout=12)
         soup = BeautifulSoup(r.text, "lxml")
+        lager = extract_stock(r.text)
 
         # Primary: JSON-LD
         for tag in soup.find_all("script", type="application/ld+json"):
@@ -47,7 +49,7 @@ def fetch_price(url):
                 if isinstance(d, dict) and "offers" in d:
                     price = float(d["offers"].get("price", 0)) or None
                     if price:
-                        return price, "på lager" in r.text.lower()
+                        return price, lager
             except Exception:
                 pass
 
@@ -56,7 +58,7 @@ def fetch_price(url):
         m = re.search(r'(\d{2,4})[,.](\d{2})\s*(?:kr|,-|</)', r.text)
         if m:
             price = float(f"{m.group(1)}.{m.group(2)}")
-            return price, "på lager" in r.text.lower()
+            return price, lager
 
         # Last resort: any element with price-related class
         for sel in ["[class*='price']", "[class*='Price']", ".price", "span.price"]:
@@ -66,7 +68,7 @@ def fetch_price(url):
                 raw = raw.replace(",", ".")
                 m = re.search(r"(\d+\.?\d*)", raw)
                 if m and float(m.group(1)) > 0:
-                    return float(m.group(1)), "på lager" in r.text.lower()
+                    return float(m.group(1)), lager
 
         return None, None
     except Exception as e:
