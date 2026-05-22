@@ -311,49 +311,50 @@ def run(products):
     )
     _stealth.apply_stealth_sync(context)
 
-    for prod in products:
-        url = prod.get("url_oda")
+    try:
+        for prod in products:
+            url = prod.get("url_oda")
 
-        # Step 1: Resolve URL
-        if not url and api_ok:
-            # API search: try product name first (more effective than varenummer)
-            if prod.get("merke"):
-                url = _search_url_api(prod["merke"])
+            # Step 1: Resolve URL
+            if not url and api_ok:
+                # API search: try product name first (more effective than varenummer)
+                if prod.get("merke"):
+                    url = _search_url_api(prod["merke"])
+                if not url:
+                    url = _search_url_api(prod["varenummer"])
+                if not url and prod.get("ean"):
+                    url = _search_url_api(prod["ean"])
+                if url:
+                    resolved[prod["varenummer"]] = url
+
             if not url:
-                url = _search_url_api(prod["varenummer"])
-            if not url and prod.get("ean"):
-                url = _search_url_api(prod["ean"])
-            if url:
-                resolved[prod["varenummer"]] = url
+                # Browser search fallback
+                url = _search_url_browser(context, prod)
+                if url:
+                    resolved[prod["varenummer"]] = url
 
-        if not url:
-            # Browser search fallback
-            url = _search_url_browser(context, prod)
-            if url:
-                resolved[prod["varenummer"]] = url
+            if not url:
+                print(f"  [oda] no URL: {prod['varenummer']}")
+                results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": None, "pa_lager": None})
+                continue
 
-        if not url:
-            print(f"  [oda] no URL: {prod['varenummer']}")
-            results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": None, "pa_lager": None})
-            continue
+            # Step 2: Fetch price
+            pris, lager = None, None
 
-        # Step 2: Fetch price
-        pris, lager = None, None
+            # Try API first (fast)
+            if api_ok:
+                pris, lager = _fetch_price_api(url)
 
-        # Try API first (fast)
-        if api_ok:
-            pris, lager = _fetch_price_api(url)
+            # Browser fallback (always available)
+            if pris is None:
+                pris, lager = _fetch_price_browser(context, url)
 
-        # Browser fallback (always available)
-        if pris is None:
-            pris, lager = _fetch_price_browser(context, url)
-
-        print(f"  [oda] {prod['varenummer']}: {pris}")
-        results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": pris, "pa_lager": lager})
-        time.sleep(0.15)
-
-    context.close()
-    browser.close()
-    pw.stop()
+            print(f"  [oda] {prod['varenummer']}: {pris}")
+            results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": pris, "pa_lager": lager})
+            time.sleep(0.15)
+    finally:
+        context.close()
+        browser.close()
+        pw.stop()
 
     return results, resolved
