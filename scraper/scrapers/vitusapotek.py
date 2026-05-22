@@ -2,7 +2,7 @@
 import re, time, json
 from urllib.parse import quote, urlparse
 from playwright.sync_api import sync_playwright
-from ._common import extract_stock
+from ._common import extract_stock, code_variants
 
 BUTIKK       = "vitusapotek"
 BASE         = "https://www.vitusapotek.no"
@@ -37,17 +37,24 @@ def run(products):
                 page = None
                 try:
                     page = context.new_page()
-                    page.goto(f"{BASE}/search?q={quote(prod['varenummer'])}", timeout=12000)
-                    # Do NOT use networkidle — wrap any wait in try/except
-                    try:
-                        page.wait_for_selector("a[href*='/p/']", timeout=8000)
-                    except Exception:
-                        pass
-                    link = page.query_selector("a[href*='/p/']")
-                    if link:
-                        href = link.get_attribute("href")
-                        url = _safe_url(href)
-                        resolved[prod["varenummer"]] = url
+                    for code in code_variants(prod["varenummer"]):
+                        page.goto(f"{BASE}/search?q={quote(code)}", timeout=12000)
+                        # Do NOT use networkidle — wrap any wait in try/except
+                        try:
+                            page.wait_for_selector("a[href*='/p/']", timeout=8000)
+                        except Exception:
+                            pass
+                        link = page.query_selector("a[href*='/p/']")
+                        if link:
+                            href = link.get_attribute("href")
+                            url = _safe_url(href)
+                            if url:
+                                resolved[prod["varenummer"]] = url
+                                break
+                    if not url:
+                        page.close()
+                        page = None
+                        raise Exception("no search result")
                     page.close()
                 except Exception as e:
                     print(f"  [vitusapotek] search error {prod['varenummer']}: {e}")

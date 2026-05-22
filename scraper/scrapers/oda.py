@@ -3,6 +3,7 @@ import re, time, json, requests
 from urllib.parse import quote, urlparse
 from playwright.sync_api import sync_playwright
 from playwright_stealth import Stealth
+from ._common import code_variants
 
 BUTIKK       = "oda"
 BASE         = "https://oda.com"
@@ -128,7 +129,7 @@ def _search_url_browser(context, prod: dict) -> str | None:
         queries.append(f"{prod['merke']} {name}".strip())
     if prod.get("merke"):
         queries.append(prod["merke"])
-    queries.append(prod["varenummer"])
+    queries.extend(code_variants(prod["varenummer"]))
 
     page = None
     try:
@@ -321,7 +322,10 @@ def run(products):
                 if prod.get("merke"):
                     url = _search_url_api(prod["merke"])
                 if not url:
-                    url = _search_url_api(prod["varenummer"])
+                    for code in code_variants(prod["varenummer"]):
+                        url = _search_url_api(code)
+                        if url:
+                            break
                 if not url and prod.get("ean"):
                     url = _search_url_api(prod["ean"])
                 if url:

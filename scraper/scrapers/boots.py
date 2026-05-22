@@ -3,7 +3,7 @@ import json, re, time
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import quote, urlparse
-from ._common import extract_stock
+from ._common import extract_stock, code_variants
 
 BUTIKK       = "boots"
 BASE         = "https://www.boots.no"
@@ -24,16 +24,17 @@ def _safe_url(href):
 
 
 def search_url(varenummer):
-    try:
-        r = requests.get(
-            f"{BASE}/catalogsearch/result/?q={quote(varenummer)}", headers=HEADS, timeout=12
-        )
-        soup = BeautifulSoup(r.text, "lxml")
-        link = soup.find("a", href=re.compile(f"-{varenummer}$"))
-        if link:
-            return _safe_url(link["href"])
-    except Exception:
-        pass
+    for code in code_variants(varenummer):
+        try:
+            r = requests.get(
+                f"{BASE}/catalogsearch/result/?q={quote(code)}", headers=HEADS, timeout=12
+            )
+            soup = BeautifulSoup(r.text, "lxml")
+            link = soup.find("a", href=re.compile(f"-{code}$"))
+            if link:
+                return _safe_url(link["href"])
+        except Exception:
+            pass
     return None
 
 def fetch_price(url):
