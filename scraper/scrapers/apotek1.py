@@ -2,7 +2,7 @@
 import re, time, json, requests
 from urllib.parse import quote, urlparse
 from playwright.sync_api import sync_playwright
-from ._common import extract_stock
+from ._common import extract_stock, code_variants
 
 BUTIKK       = "apotek1"
 BASE         = "https://www.apotek1.no"
@@ -210,14 +210,15 @@ def run(products):
                 page = None
                 try:
                     page = context.new_page()
-                    page.goto(f"{BASE}/search?q={quote(prod['varenummer'])}", timeout=15000)
+                    for code in code_variants(prod["varenummer"]):
+                        page.goto(f"{BASE}/search?q={quote(code)}", timeout=15000)
                     try:
                         page.wait_for_selector(
                             f"a[href$='-{prod['varenummer']}p'], a[href*='/produkter/']", timeout=5000
                         )
                     except Exception:
                         pass
-                    link = page.query_selector(f"a[href$='-{prod['varenummer']}p']")
+                    link = page.query_selector(f"a[href$='-{code}p']")
                     if not link:
                         link = page.query_selector("a[href*='/produkter/']")
                     if link:

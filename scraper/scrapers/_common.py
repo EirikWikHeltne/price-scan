@@ -1,5 +1,20 @@
 """Shared helpers used by multiple scrapers."""
 
+def code_variants(code: str) -> list[str]:
+    """Return search variants for product codes.
+
+    Some retailers index product codes without leading zeros. Keep the
+    original code first, then add a zero-stripped variant if different.
+    """
+    value = str(code or "").strip()
+    if not value:
+        return []
+    variants = [value]
+    stripped = value.lstrip("0")
+    if stripped and stripped != value:
+        variants.append(stripped)
+    return variants
+
 
 def extract_stock(text: str) -> bool | None:
     """Detect stock status from page text.

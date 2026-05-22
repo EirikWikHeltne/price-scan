@@ -4,7 +4,7 @@ from urllib.parse import quote, urlparse
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 from playwright_stealth import Stealth
-from ._common import extract_stock
+from ._common import extract_stock, code_variants
 
 BUTIKK       = "apotera"
 BASE         = "https://www.apotera.no"
@@ -43,7 +43,7 @@ def _safe_url(href):
 def _search_url_http(varenummer: str, produkt: str = "") -> str | None:
     """Search Apotera via Magento catalogsearch and find a product link."""
     # Try varenummer first (SKU match), then product name
-    queries = [varenummer]
+    queries = code_variants(varenummer)
     if produkt:
         queries.append(produkt)
 
