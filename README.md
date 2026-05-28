@@ -41,7 +41,7 @@ varenummer,merke,produkt,kategori
 017833,IBUX,TAB 400MG 10ENPAC,Ibuprofen
 ```
 
-To add or remove products, edit the CSV and re-run `seed_products.py`. Current categories are `Paracetamol`, `Ibuprofen`, `Mouthwash`, `Body lotion`, and `Intimate`.
+To add or remove products, edit the CSV and re-run `seed_products.py`. Current categories are `Paracetamol`, `Ibuprofen`, `Mouthwash`, `Body lotion`, `Intimate`, and `Sun`.
 
 To stop scraping a product without deleting its price history, set `aktiv = false` directly in Supabase. The scraper filters on `aktiv = true` and will skip it silently.
 
