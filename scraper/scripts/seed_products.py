@@ -10,7 +10,7 @@ from db import get_client
 
 CSV_PATH = os.path.join(os.path.dirname(__file__), "products.csv")
 
-VALID_CATEGORIES = {"Paracetamol", "Ibuprofen", "Mouthwash", "Body lotion", "Intimate"}
+VALID_CATEGORIES = {"Paracetamol", "Ibuprofen", "Mouthwash", "Body lotion", "Intimate", "Sun"}
 
 
 def seed():
