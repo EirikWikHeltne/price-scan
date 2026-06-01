@@ -8,6 +8,16 @@ BUTIKK       = "vitusapotek"
 BASE         = "https://www.vitusapotek.no"
 ALLOWED_HOST = "www.vitusapotek.no"
 
+_UA = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+_STEALTH = """
+Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+window.chrome = {runtime: {}};
+Object.defineProperty(navigator, 'languages', {get: () => ['nb-NO','nb','no','en-US','en']});
+"""
+
 
 def _safe_url(href):
     """Return absolute URL only if it resolves to the expected host."""
@@ -20,19 +30,113 @@ def _safe_url(href):
         pass
     return None
 
+
+def _page_matches_varenummer(page, varenummer):
+    """Confirm the loaded product page actually corresponds to varenummer.
+
+    Vitusapotek's search returns the first product even when there is no exact
+    match (e.g. promoted or "related" suncare items), so blindly trusting the
+    first /p/ link caches the wrong URL and reports a wrong/empty price. We
+    verify against the product's structured-data identifiers when available.
+
+    Returns True on a positive match, False on a positive mismatch, and None
+    when the page exposes no identifier to compare (caller should be lenient).
+    """
+    wanted = set(code_variants(varenummer))
+    found_any = False
+    for el in page.query_selector_all("script[type='application/ld+json']"):
+        try:
+            d = json.loads(el.inner_text())
+        except Exception:
+            continue
+        for item in (d if isinstance(d, list) else [d]):
+            if not isinstance(item, dict):
+                continue
+            for key in ("sku", "mpn", "gtin", "gtin13", "productID"):
+                val = item.get(key)
+                if val is None:
+                    continue
+                found_any = True
+                ident = str(val).strip()
+                if ident in wanted or ident.lstrip("0") in {w.lstrip("0") for w in wanted}:
+                    return True
+    return False if found_any else None
+
+
+def _extract_price(page):
+    """Extract price from a rendered Vitusapotek product page."""
+    # Layer 1: JSON-LD offers
+    for el in page.query_selector_all("script[type='application/ld+json']"):
+        try:
+            d = json.loads(el.inner_text())
+        except Exception:
+            continue
+        for item in (d if isinstance(d, list) else [d]):
+            if not isinstance(item, dict):
+                continue
+            offer = item.get("offers")
+            if not offer:
+                continue
+            if isinstance(offer, list):
+                offer = offer[0] if offer else {}
+            if isinstance(offer, dict):
+                try:
+                    pris = float(offer.get("price", 0)) or None
+                except (TypeError, ValueError):
+                    pris = None
+                if pris:
+                    return pris
+    # Layer 2: CSS class / data-testid selectors
+    for sel in ["[data-testid*='price']", "[class*='price']", "[class*='Price']"]:
+        el = page.query_selector(sel)
+        if el:
+            content = el.get_attribute("content")
+            if content:
+                try:
+                    pris = float(content)
+                    if pris:
+                        return pris
+                except ValueError:
+                    pass
+            raw = el.inner_text().replace("kr", "").replace(",", ".").strip()
+            m = re.search(r"(\d+\.?\d*)", raw)
+            if m:
+                return float(m.group(1))
+    # Layer 3: regex on full page source
+    m = re.search(r'"price"\s*:\s*"?([\d]+(?:[.,]\d+)?)"?', page.content())
+    if m:
+        try:
+            return float(m.group(1).replace(",", "."))
+        except ValueError:
+            pass
+    return None
+
+
 def run(products):
     results, resolved = [], {}
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
-        context = browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            ),
-            locale="nb-NO",
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage",
+                "--disable-infobars",
+            ],
         )
+        context = browser.new_context(
+            user_agent=_UA,
+            locale="nb-NO",
+            timezone_id="Europe/Oslo",
+            extra_http_headers={
+                "Accept-Language": "nb-NO,nb;q=0.9,no;q=0.8,nn;q=0.7,en-US;q=0.6,en;q=0.5",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            },
+        )
+        context.add_init_script(_STEALTH)
         for prod in products:
             url = prod.get("url_vitusapotek")
+            cached = bool(url)
             if not url:
                 page = None
                 try:
@@ -49,7 +153,6 @@ def run(products):
                             href = link.get_attribute("href")
                             url = _safe_url(href)
                             if url:
-                                resolved[prod["varenummer"]] = url
                                 break
                     if not url:
                         page.close()
@@ -77,25 +180,18 @@ def run(products):
                     )
                 except Exception:
                     pass  # Continue and attempt extraction anyway
-                pris = None
-                for el in page.query_selector_all("script[type='application/ld+json']"):
-                    try:
-                        d = json.loads(el.inner_text())
-                        if isinstance(d, dict) and "offers" in d:
-                            pris = float(d["offers"].get("price", 0)) or None
-                            if pris: break
-                    except Exception: pass
-                if not pris:
-                    for sel in ["[class*='price']","[class*='Price']","[data-testid*='price']"]:
-                        el = page.query_selector(sel)
-                        if el:
-                            raw = el.inner_text().replace("kr","").replace(",",".").strip()
-                            m = re.search(r"(\d+\.?\d*)", raw)
-                            if m:
-                                pris = float(m.group(1))
-                                break
+                # For URLs resolved via search, verify the page is the right
+                # product before trusting the price or caching the URL.
+                if not cached and _page_matches_varenummer(page, prod["varenummer"]) is False:
+                    page.close()
+                    print(f"  [vitusapotek] search mismatch {prod['varenummer']}: {url}")
+                    results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": None, "pa_lager": None})
+                    continue
+                pris = _extract_price(page)
                 lager = extract_stock(page.content())
                 page.close()
+                if not cached and pris is not None:
+                    resolved[prod["varenummer"]] = url
                 print(f"  [vitusapotek] {prod['varenummer']}: {pris}")
                 results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": pris, "pa_lager": lager})
                 time.sleep(0.1)
