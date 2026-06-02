@@ -1,5 +1,5 @@
-"""Vitusapotek.no — single browser session for all products."""
-import re, time, json
+"""Vitusapotek.no — sitemap URL discovery + single browser session for prices."""
+import re, time, json, requests
 from urllib.parse import quote, urlparse
 from playwright.sync_api import sync_playwright
 from ._common import extract_stock, code_variants
@@ -12,6 +12,11 @@ _UA = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
+_REQ_HEADERS = {
+    "User-Agent": _UA,
+    "Accept-Language": "nb-NO,nb;q=0.9,no;q=0.8",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+}
 _STEALTH = """
 Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
 window.chrome = {runtime: {}};
@@ -29,6 +34,59 @@ def _safe_url(href):
     except Exception:
         pass
     return None
+
+
+# ---------------------------------------------------------------------------
+# Sitemap-based URL discovery
+# ---------------------------------------------------------------------------
+# The per-product search box does not resolve many products (notably the entire
+# Sun/suncare range, which returns no /p/ result), so we mirror apotek1 and
+# build a varenummer->URL index from the sitemap up front over plain HTTP. This
+# also avoids hundreds of slow per-product search timeouts.
+
+def _parse_sitemap_urls(text, index):
+    """Extract varenummer->URL pairs from sitemap XML text.
+
+    Vitusapotek product pages live under /p/. We don't know the exact slug
+    format, so we index each product URL under every 5-10 digit run found in
+    it — the varenummer (and/or EAN) is the only token in that length range;
+    size/SPF tokens like "200ML" or "F50" are shorter and excluded.
+    """
+    for url in re.findall(r'<loc>\s*(https?://[^\s<]+)\s*</loc>', text):
+        if "/p/" not in url:
+            continue
+        for token in re.findall(r'\d{5,10}', url):
+            index.setdefault(token, url)
+
+
+def _fetch_and_index(url, index, depth=0):
+    if depth > 2:
+        return
+    try:
+        r = requests.get(url, headers=_REQ_HEADERS, timeout=15)
+        r.raise_for_status()
+        text = r.text
+        if '<sitemapindex' in text or ('<sitemap>' in text and '<loc>' in text):
+            # Sitemap index — recurse into sub-sitemaps (trusted domain only)
+            for sub in re.findall(r'<loc>\s*(https?://[^\s<]+)\s*</loc>', text):
+                host = urlparse(sub).netloc
+                if host not in (ALLOWED_HOST, ALLOWED_HOST.removeprefix("www.")):
+                    continue
+                if depth == 0 or 'product' in sub.lower() or '/p' in sub.lower():
+                    _fetch_and_index(sub, index, depth + 1)
+        else:
+            _parse_sitemap_urls(text, index)
+    except Exception as e:
+        print(f"  [vitusapotek] sitemap error {url}: {e}")
+
+
+def _build_sitemap_index():
+    """Download Vitusapotek sitemaps and return varenummer->URL dict."""
+    index = {}
+    print("  [vitusapotek] building URL index from sitemap...")
+    _fetch_and_index(f"{BASE}/sitemap.xml", index)
+    print(f"  [vitusapotek] sitemap: {len(index)} product URLs indexed")
+    return index
 
 
 def _page_matches_varenummer(page, varenummer):
@@ -114,6 +172,10 @@ def _extract_price(page):
 
 def run(products):
     results, resolved = [], {}
+
+    # Step 1: build sitemap URL index (HTTP, no browser, bypasses bot protection)
+    sitemap_index = _build_sitemap_index()
+
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
@@ -136,8 +198,20 @@ def run(products):
         context.add_init_script(_STEALTH)
         for prod in products:
             url = prod.get("url_vitusapotek")
-            cached = bool(url)
+            # Cache and sitemap hits map varenummer->URL exactly, so they are
+            # trusted. Only search results (fuzzy) need page-level verification.
+            verify = False
+
+            # Resolve via sitemap index before falling back to live search.
             if not url:
+                for code in code_variants(prod["varenummer"]):
+                    url = sitemap_index.get(code)
+                    if url:
+                        resolved[prod["varenummer"]] = url
+                        break
+
+            if not url:
+                verify = True
                 page = None
                 try:
                     page = context.new_page()
@@ -182,7 +256,7 @@ def run(products):
                     pass  # Continue and attempt extraction anyway
                 # For URLs resolved via search, verify the page is the right
                 # product before trusting the price or caching the URL.
-                if not cached and _page_matches_varenummer(page, prod["varenummer"]) is False:
+                if verify and _page_matches_varenummer(page, prod["varenummer"]) is False:
                     page.close()
                     print(f"  [vitusapotek] search mismatch {prod['varenummer']}: {url}")
                     results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": None, "pa_lager": None})
@@ -190,7 +264,7 @@ def run(products):
                 pris = _extract_price(page)
                 lager = extract_stock(page.content())
                 page.close()
-                if not cached and pris is not None:
+                if verify and pris is not None:
                     resolved[prod["varenummer"]] = url
                 print(f"  [vitusapotek] {prod['varenummer']}: {pris}")
                 results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": pris, "pa_lager": lager})
