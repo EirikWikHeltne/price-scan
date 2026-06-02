@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: '0 2 * * *'
   workflow_dispatch:
+    inputs:
+      only:
+        description: 'Comma-separated scrapers to run (blank = all). E.g. "vitusapotek"'
+        required: false
+        default: ''
 
 jobs:
   scrape:
@@ -45,4 +50,5 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SCRAPERS_ONLY: ${{ github.event.inputs.only }}
         run: python run.py

@@ -1,5 +1,6 @@
 """Main entry point: python run.py"""
 import logging
+import os
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from db import get_active_products, save_resolved_url, bulk_insert_prices
@@ -15,6 +16,15 @@ SCRAPERS = {
     "oda":         oda,
     "apotera":     apotera,
 }
+
+# Optional allowlist (SCRAPERS_ONLY="vitusapotek,apotek1") to run a subset —
+# handy for fast validation runs via workflow_dispatch. Blank = run all.
+_only = {s.strip() for s in os.environ.get("SCRAPERS_ONLY", "").split(",") if s.strip()}
+if _only:
+    unknown = _only - SCRAPERS.keys()
+    if unknown:
+        raise SystemExit(f"SCRAPERS_ONLY has unknown scrapers: {sorted(unknown)}")
+    SCRAPERS = {name: mod for name, mod in SCRAPERS.items() if name in _only}
 
 # Grocery retailers only scrape these categories (pharmacy retailers get all)
 GROCERY_SCRAPERS = {"oda"}
