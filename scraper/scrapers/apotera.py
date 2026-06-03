@@ -76,6 +76,60 @@ def _search_url_http(varenummer: str, produkt: str = "") -> str | None:
     return None
 
 
+def _search_url_playwright(context, varenummer: str, produkt: str = "") -> str | None:
+    """Browser fallback for URL resolution.
+
+    Apotera's catalogsearch is often bot-protected or JS-rendered, so the
+    plain-HTTP search in `_search_url_http` returns nothing. Render the search
+    page in a real browser and pull the first product link from the results.
+    """
+    queries = code_variants(varenummer)
+    if produkt:
+        queries.append(produkt)
+
+    page = None
+    try:
+        page = context.new_page()
+        for query in queries:
+            try:
+                page.goto(
+                    f"{BASE}/catalogsearch/result/?q={quote(query)}", timeout=15000
+                )
+            except Exception:
+                continue
+            _dismiss_cookie_banner(page)
+            try:
+                page.wait_for_selector(
+                    "a.product-item-link, .product-item a[href], .products-list a[href]",
+                    timeout=6000,
+                )
+            except Exception:
+                pass
+            for link in page.query_selector_all(
+                "a.product-item-link, .product-item a[href], .products-list a[href]"
+            ):
+                href = link.get_attribute("href") or ""
+                url = _safe_url(href)
+                if url and _is_product_url(url):
+                    return url
+            # Broader fallback: any link that looks like a product page
+            for link in page.query_selector_all("a[href]"):
+                href = link.get_attribute("href") or ""
+                url = _safe_url(href)
+                if url and _is_product_url(url):
+                    return url
+        return None
+    except Exception as e:
+        print(f"  [apotera] search Playwright error {varenummer}: {e}")
+        return None
+    finally:
+        if page:
+            try:
+                page.close()
+            except Exception:
+                pass
+
+
 def _is_product_url(url: str) -> bool:
     """Heuristic: Apotera product URLs are clean slugs with multiple hyphenated words.
     They do NOT contain paths like /catalogsearch/, /customer/, /checkout/ etc."""
@@ -254,7 +308,25 @@ def _dismiss_cookie_banner(page):
 
 def run(products):
     results, resolved = [], {}
-    browser = None
+    pw = browser = context = None
+
+    def _ensure_browser():
+        """Lazily start a stealth browser; reused for search and price."""
+        nonlocal pw, browser, context
+        if browser is None:
+            pw = sync_playwright().start()
+            browser = pw.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-blink-features=AutomationControlled",
+                       "--disable-dev-shm-usage"]
+            )
+            context = browser.new_context(
+                user_agent=_UA, locale="nb-NO", timezone_id="Europe/Oslo",
+                viewport={"width": 1920, "height": 1080},
+                extra_http_headers={"Accept-Language": "nb-NO,nb;q=0.9,no;q=0.8"},
+            )
+            _stealth.apply_stealth_sync(context)
+        return context
 
     for prod in products:
         url = prod.get("url_apotera")
@@ -262,6 +334,12 @@ def run(products):
         # Step 1: Resolve URL via HTTP search (fast, no browser)
         if not url:
             url = _search_url_http(prod["varenummer"], prod.get("produkt", ""))
+            # Step 1b: Browser fallback — apotera's search is bot-protected /
+            # JS-rendered, so plain HTTP search often returns nothing.
+            if not url:
+                url = _search_url_playwright(
+                    _ensure_browser(), prod["varenummer"], prod.get("produkt", "")
+                )
             if url:
                 resolved[prod["varenummer"]] = url
 
@@ -283,20 +361,7 @@ def run(products):
 
         # Step 3: Playwright fallback only if HTTP failed
         if pris is None:
-            if browser is None:
-                pw = sync_playwright().start()
-                browser = pw.chromium.launch(
-                    headless=True,
-                    args=["--no-sandbox", "--disable-blink-features=AutomationControlled",
-                           "--disable-dev-shm-usage"]
-                )
-                context = browser.new_context(
-                    user_agent=_UA, locale="nb-NO", timezone_id="Europe/Oslo",
-                    viewport={"width": 1920, "height": 1080},
-                    extra_http_headers={"Accept-Language": "nb-NO,nb;q=0.9,no;q=0.8"},
-                )
-                _stealth.apply_stealth_sync(context)
-
+            _ensure_browser()
             page = None
             try:
                 page = context.new_page()
