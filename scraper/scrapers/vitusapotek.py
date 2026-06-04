@@ -80,11 +80,54 @@ def _fetch_and_index(url, index, depth=0):
         print(f"  [vitusapotek] sitemap error {url}: {e}")
 
 
+# Conventional sitemap locations, tried in order when robots.txt does not
+# advertise one. Vitusapotek moved its sitemap — the old /sitemap.xml now 404s
+# — so we no longer hardcode a single path.
+_SITEMAP_CANDIDATES = [
+    "/sitemap.xml",
+    "/sitemap_index.xml",
+    "/sitemap-index.xml",
+    "/sitemap/sitemap.xml",
+    "/sitemaps/sitemap.xml",
+    "/media/sitemap.xml",
+]
+
+
+def _sitemaps_from_robots():
+    """Return sitemap URLs advertised in robots.txt (authoritative source)."""
+    urls = []
+    try:
+        r = requests.get(f"{BASE}/robots.txt", headers=_REQ_HEADERS, timeout=15)
+        if r.status_code == 200:
+            for line in r.text.splitlines():
+                if line.lower().startswith("sitemap:"):
+                    loc = line.split(":", 1)[1].strip()
+                    if loc and _safe_url(loc):
+                        urls.append(loc)
+    except Exception as e:
+        print(f"  [vitusapotek] robots.txt error: {e}")
+    return urls
+
+
 def _build_sitemap_index():
-    """Download Vitusapotek sitemaps and return varenummer->URL dict."""
+    """Download Vitusapotek sitemaps and return varenummer->URL dict.
+
+    The sitemap location is discovered from robots.txt first (authoritative),
+    then falls back to conventional paths. We stop at the first sitemap that
+    actually yields product URLs.
+    """
     index = {}
     print("  [vitusapotek] building URL index from sitemap...")
-    _fetch_and_index(f"{BASE}/sitemap.xml", index)
+    candidates = _sitemaps_from_robots()
+    candidates += [BASE + p for p in _SITEMAP_CANDIDATES]
+    seen = set()
+    for sm in candidates:
+        if sm in seen:
+            continue
+        seen.add(sm)
+        _fetch_and_index(sm, index)
+        if index:
+            break
     print(f"  [vitusapotek] sitemap: {len(index)} product URLs indexed")
     return index
 
