@@ -100,6 +100,55 @@ def _is_product_url(url: str) -> bool:
     return False
 
 
+def _page_matches_varenummer(html: str, varenummer: str):
+    """Confirm a resolved Apotera page actually corresponds to varenummer.
+
+    Magento catalogsearch returns a results grid even when there is no exact
+    match, and `_is_product_url` is a loose slug heuristic, so a search can
+    land on an unrelated product. We verify against the page's structured-data
+    / Magento identifiers (sku, gtin, mpn) and any visible varenummer.
+
+    Returns True on a positive match, False on a positive mismatch, and None
+    when the page exposes no identifier to compare (caller should be lenient).
+    """
+    wanted = set(code_variants(varenummer))
+    wanted_stripped = {w.lstrip("0") for w in wanted}
+    found_any = False
+
+    soup = BeautifulSoup(html, "lxml")
+    for tag in soup.find_all("script", type="application/ld+json"):
+        try:
+            d = json.loads(tag.string or "")
+        except Exception:
+            continue
+        for item in (d if isinstance(d, list) else [d]):
+            if not isinstance(item, dict):
+                continue
+            for key in ("sku", "mpn", "gtin", "gtin13", "gtin12", "productID"):
+                val = item.get(key)
+                if val is None:
+                    continue
+                found_any = True
+                ident = str(val).strip()
+                if ident in wanted or ident.lstrip("0") in wanted_stripped:
+                    return True
+
+    # Magento often exposes the SKU as a data attribute or itemprop too.
+    for ident in re.findall(r'"sku"\s*:\s*"([^"]+)"', html):
+        found_any = True
+        ident = ident.strip()
+        if ident in wanted or ident.lstrip("0") in wanted_stripped:
+            return True
+    meta = soup.find("meta", attrs={"itemprop": "sku"})
+    if meta and meta.get("content"):
+        found_any = True
+        ident = meta["content"].strip()
+        if ident in wanted or ident.lstrip("0") in wanted_stripped:
+            return True
+
+    return False if found_any else None
+
+
 # ---------------------------------------------------------------------------
 # Price extraction from HTML (Magento 2 patterns)
 # ---------------------------------------------------------------------------
@@ -157,16 +206,9 @@ def _extract_price_from_html(html: str) -> float | None:
                 if val > 0:
                     return val
 
-    # Layer 5: "price" key in page source (JSON embedded in scripts)
-    m = re.search(r'"price"\s*:\s*"?([\d]+(?:[.,]\d+)?)"?', html)
-    if m:
-        try:
-            pris = float(m.group(1).replace(",", "."))
-            if pris > 0:
-                return pris
-        except Exception:
-            pass
-
+    # NB: deliberately no greedy `"price":` regex fallback here. The first
+    # such key on an Apotera page is the shipping/frakt config (95 kr), so a
+    # regex sweep silently reports the freight fee as the product price.
     return None
 
 
@@ -258,12 +300,14 @@ def run(products):
 
     for prod in products:
         url = prod.get("url_apotera")
+        # Cached URLs map varenummer->URL exactly, so they are trusted. Only
+        # search results (fuzzy) need page-level verification.
+        verify = False
 
         # Step 1: Resolve URL via HTTP search (fast, no browser)
         if not url:
             url = _search_url_http(prod["varenummer"], prod.get("produkt", ""))
-            if url:
-                resolved[prod["varenummer"]] = url
+            verify = bool(url)
 
         if not url:
             print(f"  [apotera] no URL: {prod['varenummer']}")
@@ -273,16 +317,22 @@ def run(products):
         # Step 2: Fetch price via HTTP first (Magento renders server-side)
         pris = None
         lager = None
+        mismatch = False
         try:
             r = requests.get(url, headers=_REQ_HEADERS, timeout=12)
             if r.status_code == 200:
-                pris = _extract_price_from_html(r.text)
-                lager = extract_stock(r.text)
+                if verify and _page_matches_varenummer(r.text, prod["varenummer"]) is False:
+                    mismatch = True
+                    print(f"  [apotera] search mismatch {prod['varenummer']}: {url}")
+                else:
+                    pris = _extract_price_from_html(r.text)
+                    lager = extract_stock(r.text)
         except Exception as e:
             print(f"  [apotera] HTTP error {prod['varenummer']}: {e}")
 
-        # Step 3: Playwright fallback only if HTTP failed
-        if pris is None:
+        # Step 3: Playwright fallback only if HTTP failed (skip confirmed
+        # mismatches — the URL is wrong, rendering it won't help)
+        if pris is None and not mismatch:
             if browser is None:
                 pw = sync_playwright().start()
                 browser = pw.chromium.launch(
@@ -310,9 +360,13 @@ def run(products):
                     )
                 except Exception:
                     pass
-                pris = _extract_price_playwright(page)
-                if lager is None:
-                    lager = extract_stock(page.content())
+                if verify and _page_matches_varenummer(page.content(), prod["varenummer"]) is False:
+                    mismatch = True
+                    print(f"  [apotera] search mismatch {prod['varenummer']}: {url}")
+                else:
+                    pris = _extract_price_playwright(page)
+                    if lager is None:
+                        lager = extract_stock(page.content())
                 page.close()
             except Exception as e:
                 print(f"  [apotera] Playwright error {prod['varenummer']}: {e}")
@@ -321,6 +375,10 @@ def run(products):
                         page.close()
                     except Exception:
                         pass
+
+        # Cache the resolved URL only once it produced a verified price.
+        if verify and pris is not None and not mismatch:
+            resolved[prod["varenummer"]] = url
 
         print(f"  [apotera] {prod['varenummer']}: {pris}")
         results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": pris, "pa_lager": lager})
