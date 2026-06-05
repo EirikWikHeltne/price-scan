@@ -291,12 +291,86 @@ def _dismiss_cookie_banner(page):
 
 
 # ---------------------------------------------------------------------------
+# Playwright fallback for URL resolution
+# ---------------------------------------------------------------------------
+
+def _search_url_playwright(context, varenummer: str, produkt: str = "") -> str | None:
+    """Resolve a product URL by driving the Magento catalogsearch in a browser.
+
+    Apotera fronts its store with bot protection that 403s plain `requests`,
+    so the HTTP search silently finds nothing and every product is reported as
+    "no URL". When that happens this renders the search results page in the
+    shared Playwright context, which passes the bot checks, and extracts the
+    first product link.
+    """
+    queries = code_variants(varenummer)
+    if produkt:
+        queries.append(produkt)
+
+    page = None
+    try:
+        page = context.new_page()
+        for query in queries:
+            try:
+                page.goto(f"{BASE}/catalogsearch/result/?q={quote(query)}", timeout=15000)
+            except Exception:
+                continue
+            _dismiss_cookie_banner(page)
+            try:
+                page.wait_for_selector(
+                    "a.product-item-link, .product-item a[href], .products-list a[href]",
+                    timeout=6000,
+                )
+            except Exception:
+                pass
+            selectors = [
+                "a.product-item-link",
+                ".product-item a[href]",
+                ".products-list a[href]",
+                "a[href]",  # broad fallback
+            ]
+            for sel in selectors:
+                for el in page.query_selector_all(sel):
+                    href = el.get_attribute("href") or ""
+                    url = _safe_url(href)
+                    if url and _is_product_url(url):
+                        page.close()
+                        return url
+        page.close()
+    except Exception as e:
+        print(f"  [apotera] Playwright search error {varenummer}: {e}")
+        if page:
+            try: page.close()
+            except Exception: pass
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Main run function
 # ---------------------------------------------------------------------------
 
 def run(products):
     results, resolved = [], {}
-    browser = None
+    pw = browser = context = None
+
+    def ensure_context():
+        """Lazily start a single shared browser context (reused for search
+        and price extraction) and return it."""
+        nonlocal pw, browser, context
+        if context is None:
+            pw = sync_playwright().start()
+            browser = pw.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-blink-features=AutomationControlled",
+                       "--disable-dev-shm-usage"],
+            )
+            context = browser.new_context(
+                user_agent=_UA, locale="nb-NO", timezone_id="Europe/Oslo",
+                viewport={"width": 1920, "height": 1080},
+                extra_http_headers={"Accept-Language": "nb-NO,nb;q=0.9,no;q=0.8"},
+            )
+            _stealth.apply_stealth_sync(context)
+        return context
 
     for prod in products:
         url = prod.get("url_apotera")
@@ -307,6 +381,12 @@ def run(products):
         # Step 1: Resolve URL via HTTP search (fast, no browser)
         if not url:
             url = _search_url_http(prod["varenummer"], prod.get("produkt", ""))
+            verify = bool(url)
+
+        # Step 1b: HTTP search is 403'd by bot protection — fall back to a
+        # browser-driven search so uncached products still resolve.
+        if not url:
+            url = _search_url_playwright(ensure_context(), prod["varenummer"], prod.get("produkt", ""))
             verify = bool(url)
 
         if not url:
@@ -333,23 +413,9 @@ def run(products):
         # Step 3: Playwright fallback only if HTTP failed (skip confirmed
         # mismatches — the URL is wrong, rendering it won't help)
         if pris is None and not mismatch:
-            if browser is None:
-                pw = sync_playwright().start()
-                browser = pw.chromium.launch(
-                    headless=True,
-                    args=["--no-sandbox", "--disable-blink-features=AutomationControlled",
-                           "--disable-dev-shm-usage"]
-                )
-                context = browser.new_context(
-                    user_agent=_UA, locale="nb-NO", timezone_id="Europe/Oslo",
-                    viewport={"width": 1920, "height": 1080},
-                    extra_http_headers={"Accept-Language": "nb-NO,nb;q=0.9,no;q=0.8"},
-                )
-                _stealth.apply_stealth_sync(context)
-
             page = None
             try:
-                page = context.new_page()
+                page = ensure_context().new_page()
                 page.goto(url, timeout=15000)
                 _dismiss_cookie_banner(page)
                 try:
@@ -385,7 +451,7 @@ def run(products):
         time.sleep(0.15)
 
     # Clean up browser only if it was started
-    if browser:
+    if context:
         context.close()
         browser.close()
         pw.stop()

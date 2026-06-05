@@ -113,21 +113,31 @@ def _build_sitemap_index():
     """Download Vitusapotek sitemaps and return varenummer->URL dict.
 
     The sitemap location is discovered from robots.txt first (authoritative),
-    then falls back to conventional paths. We stop at the first sitemap that
-    actually yields product URLs.
+    then falls back to conventional paths.
+
+    robots.txt often advertises *several* product sitemaps (split by category
+    or alphabetically). We must index ALL of them — stopping at the first
+    non-empty one silently drops every product in the later files, which is
+    how the entire Sun range went missing. We only fall back to the
+    conventional single-file locations when robots.txt yields nothing usable.
     """
     index = {}
     print("  [vitusapotek] building URL index from sitemap...")
-    candidates = _sitemaps_from_robots()
-    candidates += [BASE + p for p in _SITEMAP_CANDIDATES]
+    robots = _sitemaps_from_robots()
     seen = set()
-    for sm in candidates:
+    for sm in robots:
         if sm in seen:
             continue
         seen.add(sm)
         _fetch_and_index(sm, index)
-        if index:
-            break
+    if not index:
+        for sm in (BASE + p for p in _SITEMAP_CANDIDATES):
+            if sm in seen:
+                continue
+            seen.add(sm)
+            _fetch_and_index(sm, index)
+            if index:
+                break
     print(f"  [vitusapotek] sitemap: {len(index)} product URLs indexed")
     return index
 
@@ -162,6 +172,74 @@ def _page_matches_varenummer(page, varenummer):
                 if ident in wanted or ident.lstrip("0") in {w.lstrip("0") for w in wanted}:
                     return True
     return False if found_any else None
+
+
+def _name_query(prod):
+    """Build a human-readable search query (brand + product name).
+
+    The Sun range cannot be resolved by varenummer through the search box, so
+    we fall back to searching by name. Brand is prepended only when the product
+    string doesn't already start with it, to avoid duplicated tokens.
+    """
+    merke = (prod.get("merke") or "").strip()
+    produkt = (prod.get("produkt") or "").strip()
+    if merke and not produkt.upper().startswith(merke.upper()):
+        return f"{merke} {produkt}".strip()
+    return produkt or merke
+
+
+def _search_candidates(context, prod, limit=5):
+    """Resolve candidate product URLs via the search box.
+
+    Returns a list of (url, strict) tuples. ``strict`` is False for hits from
+    an exact varenummer search (the first result is trustworthy) and True for
+    hits from a name search (fuzzy — the page MUST positively match the
+    varenummer before its price is trusted, otherwise we'd report an unrelated
+    product's price).
+    """
+    candidates, seen = [], set()
+    codes = code_variants(prod["varenummer"])
+    queries = [(c, False) for c in codes]
+    name = _name_query(prod)
+    if name:
+        queries.append((name, True))
+
+    page = None
+    try:
+        page = context.new_page()
+        for query, strict in queries:
+            try:
+                page.goto(f"{BASE}/search?q={quote(query)}", timeout=12000)
+            except Exception:
+                continue
+            # Do NOT use networkidle — wrap any wait in try/except
+            try:
+                page.wait_for_selector("a[href*='/p/']", timeout=8000)
+            except Exception:
+                pass
+            found_here = False
+            for el in page.query_selector_all("a[href*='/p/']"):
+                href = el.get_attribute("href") or ""
+                url = _safe_url(href)
+                if url and url not in seen:
+                    seen.add(url)
+                    candidates.append((url, strict))
+                    found_here = True
+                    if len(candidates) >= limit:
+                        break
+            # An exact varenummer search that returned results is authoritative;
+            # don't dilute it with fuzzy name hits.
+            if found_here and not strict:
+                break
+            if len(candidates) >= limit:
+                break
+        page.close()
+    except Exception as e:
+        print(f"  [vitusapotek] search error {prod['varenummer']}: {e}")
+        if page:
+            try: page.close()
+            except Exception: pass
+    return candidates
 
 
 def _extract_price(page):
@@ -240,84 +318,75 @@ def run(products):
         )
         context.add_init_script(_STEALTH)
         for prod in products:
-            url = prod.get("url_vitusapotek")
-            # Cache and sitemap hits map varenummer->URL exactly, so they are
-            # trusted. Only search results (fuzzy) need page-level verification.
-            verify = False
+            # Build an ordered list of (url, strict) candidates. Cache and
+            # sitemap hits map varenummer->URL exactly, so they are trusted
+            # (strict=False, lenient verify). Live search results are fuzzy.
+            candidates = []
 
-            # Resolve via sitemap index before falling back to live search.
-            if not url:
+            cached = prod.get("url_vitusapotek")
+            if cached:
+                candidates.append((cached, False))
+            else:
+                # Resolve via sitemap index before falling back to live search.
                 for code in code_variants(prod["varenummer"]):
-                    url = sitemap_index.get(code)
-                    if url:
-                        resolved[prod["varenummer"]] = url
+                    hit = sitemap_index.get(code)
+                    if hit:
+                        candidates.append((hit, False))
+                        resolved[prod["varenummer"]] = hit
                         break
 
-            if not url:
-                verify = True
-                page = None
-                try:
-                    page = context.new_page()
-                    for code in code_variants(prod["varenummer"]):
-                        page.goto(f"{BASE}/search?q={quote(code)}", timeout=12000)
-                        # Do NOT use networkidle — wrap any wait in try/except
-                        try:
-                            page.wait_for_selector("a[href*='/p/']", timeout=8000)
-                        except Exception:
-                            pass
-                        link = page.query_selector("a[href*='/p/']")
-                        if link:
-                            href = link.get_attribute("href")
-                            url = _safe_url(href)
-                            if url:
-                                break
-                    if not url:
-                        page.close()
-                        page = None
-                        raise Exception("no search result")
-                    page.close()
-                except Exception as e:
-                    print(f"  [vitusapotek] search error {prod['varenummer']}: {e}")
-                    if page:
-                        try: page.close()
-                        except Exception: pass
-            if not url:
+            if not candidates:
+                candidates = _search_candidates(context, prod)
+
+            if not candidates:
                 print(f"  [vitusapotek] no URL: {prod['varenummer']}")
                 results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": None, "pa_lager": None})
                 continue
-            page = None
-            try:
-                page = context.new_page()
-                page.goto(url, timeout=12000)
-                # Do NOT use networkidle — it times out and skips extraction
+
+            pris = lager = None
+            chosen = None
+            for url, strict in candidates:
+                page = None
                 try:
-                    page.wait_for_selector(
-                        "script[type='application/ld+json'], [class*='price'], [class*='Price']",
-                        timeout=5000
-                    )
-                except Exception:
-                    pass  # Continue and attempt extraction anyway
-                # For URLs resolved via search, verify the page is the right
-                # product before trusting the price or caching the URL.
-                if verify and _page_matches_varenummer(page, prod["varenummer"]) is False:
+                    page = context.new_page()
+                    page.goto(url, timeout=12000)
+                    # Do NOT use networkidle — it times out and skips extraction
+                    try:
+                        page.wait_for_selector(
+                            "script[type='application/ld+json'], [class*='price'], [class*='Price']",
+                            timeout=5000
+                        )
+                    except Exception:
+                        pass  # Continue and attempt extraction anyway
+                    # Verify the page is the right product before trusting its
+                    # price. A positive mismatch is always rejected. Fuzzy
+                    # name-search candidates (strict) additionally require a
+                    # POSITIVE match — a page that exposes no identifier is not
+                    # trusted, because the search may have landed on an
+                    # unrelated product.
+                    match = _page_matches_varenummer(page, prod["varenummer"])
+                    if match is False or (strict and match is not True):
+                        page.close()
+                        print(f"  [vitusapotek] search mismatch {prod['varenummer']}: {url}")
+                        continue
+                    pris = _extract_price(page)
+                    lager = extract_stock(page.content())
                     page.close()
-                    print(f"  [vitusapotek] search mismatch {prod['varenummer']}: {url}")
-                    results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": None, "pa_lager": None})
-                    continue
-                pris = _extract_price(page)
-                lager = extract_stock(page.content())
-                page.close()
-                if verify and pris is not None:
-                    resolved[prod["varenummer"]] = url
-                print(f"  [vitusapotek] {prod['varenummer']}: {pris}")
-                results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": pris, "pa_lager": lager})
-                time.sleep(0.1)
-            except Exception as e:
-                print(f"  [vitusapotek] error {prod['varenummer']}: {e}")
-                if page:
-                    try: page.close()
-                    except Exception: pass
-                results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": None, "pa_lager": None})
+                    if pris is not None:
+                        chosen = url
+                        break
+                except Exception as e:
+                    print(f"  [vitusapotek] error {prod['varenummer']}: {e}")
+                    if page:
+                        try: page.close()
+                        except Exception: pass
+
+            # Cache a search-resolved URL only once it produced a price.
+            if chosen and not cached and prod["varenummer"] not in resolved and pris is not None:
+                resolved[prod["varenummer"]] = chosen
+            print(f"  [vitusapotek] {prod['varenummer']}: {pris}")
+            results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": pris, "pa_lager": lager})
+            time.sleep(0.1)
         context.close()
         browser.close()
     return results, resolved
