@@ -2,6 +2,9 @@ name: Diagnose Vitus/Apotera
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - claude/vitus-apotera-price-fetch-xll72p
 
 jobs:
   diagnose:
