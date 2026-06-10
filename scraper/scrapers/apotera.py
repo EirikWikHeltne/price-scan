@@ -304,6 +304,14 @@ def run(products):
         # search results (fuzzy) need page-level verification.
         verify = False
 
+        # An older scraper version cached search redirects to the customer
+        # login page ("/customer/account/login/referer/...") for the whole
+        # catalogue. Those are not product pages — drop them and re-resolve,
+        # so the fresh URL gets saved over the poisoned cache entry.
+        if url and not _is_product_url(url):
+            print(f"  [apotera] bad cached URL {prod['varenummer']}: {url}")
+            url = None
+
         # Step 1: Resolve URL via HTTP search (fast, no browser)
         if not url:
             url = _search_url_http(prod["varenummer"], prod.get("produkt", ""))
@@ -327,6 +335,8 @@ def run(products):
                 else:
                     pris = _extract_price_from_html(r.text)
                     lager = extract_stock(r.text)
+            else:
+                print(f"  [apotera] HTTP {r.status_code} {prod['varenummer']}: {url}")
         except Exception as e:
             print(f"  [apotera] HTTP error {prod['varenummer']}: {e}")
 

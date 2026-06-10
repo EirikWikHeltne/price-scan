@@ -47,16 +47,21 @@ def _safe_url(href):
 def _parse_sitemap_urls(text, index):
     """Extract varenummer->URL pairs from sitemap XML text.
 
-    Vitusapotek product pages live under /p/. We don't know the exact slug
-    format, so we index each product URL under every 5-10 digit run found in
-    it — the varenummer (and/or EAN) is the only token in that length range;
-    size/SPF tokens like "200ML" or "F50" are shorter and excluded.
+    Vitusapotek product URLs come in two formats:
+      - legacy: .../<slug>/p/<varenummer>  (only a handful remain)
+      - current: .../<category-path>/<slug>-<varenummer>  (the slug ends with
+        the varenummer, e.g. ".../ebastin-orifarm-tab-10mg-100-stk-053259")
+    Index both so the sitemap resolves nearly the whole catalogue.
     """
     for url in re.findall(r'<loc>\s*(https?://[^\s<]+)\s*</loc>', text):
-        if "/p/" not in url:
+        path = urlparse(url).path
+        if "/p/" in path:
+            for token in re.findall(r'\d{5,10}', path):
+                index.setdefault(token, url)
             continue
-        for token in re.findall(r'\d{5,10}', url):
-            index.setdefault(token, url)
+        m = re.search(r'-(\d{5,10})/?$', path)
+        if m:
+            index.setdefault(m.group(1), url)
 
 
 def _fetch_and_index(url, index, depth=0):
@@ -67,13 +72,16 @@ def _fetch_and_index(url, index, depth=0):
         r.raise_for_status()
         text = r.text
         if '<sitemapindex' in text or ('<sitemap>' in text and '<loc>' in text):
-            # Sitemap index — recurse into sub-sitemaps (trusted domain only)
-            for sub in re.findall(r'<loc>\s*(https?://[^\s<]+)\s*</loc>', text):
-                host = urlparse(sub).netloc
-                if host not in (ALLOWED_HOST, ALLOWED_HOST.removeprefix("www.")):
-                    continue
-                if depth == 0 or 'product' in sub.lower() or '/p' in sub.lower():
-                    _fetch_and_index(sub, index, depth + 1)
+            # Sitemap index — recurse into sub-sitemaps (trusted domain only).
+            # Prefer subs named "product"; only fall back to fetching all subs
+            # when none are (avoids downloading category/store/article maps).
+            subs = [
+                sub for sub in re.findall(r'<loc>\s*(https?://[^\s<]+)\s*</loc>', text)
+                if urlparse(sub).netloc in (ALLOWED_HOST, ALLOWED_HOST.removeprefix("www."))
+            ]
+            product_subs = [s for s in subs if 'product' in s.lower()]
+            for sub in (product_subs or subs):
+                _fetch_and_index(sub, index, depth + 1)
         else:
             _parse_sitemap_urls(text, index)
     except Exception as e:
@@ -126,7 +134,10 @@ def _build_sitemap_index():
             continue
         seen.add(sm)
         _fetch_and_index(sm, index)
-        if index:
+        # A healthy product sitemap yields thousands of URLs; a handful means
+        # we hit a stub (e.g. only legacy /p/ leftovers), so keep trying other
+        # candidates and merge whatever each one contributes.
+        if len(index) >= 100:
             break
     print(f"  [vitusapotek] sitemap: {len(index)} product URLs indexed")
     return index
@@ -245,13 +256,15 @@ def run(products):
             # trusted. Only search results (fuzzy) need page-level verification.
             verify = False
 
-            # Resolve via sitemap index before falling back to live search.
-            if not url:
-                for code in code_variants(prod["varenummer"]):
-                    url = sitemap_index.get(code)
-                    if url:
-                        resolved[prod["varenummer"]] = url
-                        break
+            # The sitemap is fresh and authoritative: prefer it even over a
+            # cached URL, which may be a stale legacy /p/ link that now 404s.
+            for code in code_variants(prod["varenummer"]):
+                sitemap_url = sitemap_index.get(code)
+                if sitemap_url:
+                    if sitemap_url != url:
+                        url = sitemap_url
+                        resolved[prod["varenummer"]] = sitemap_url
+                    break
 
             if not url:
                 verify = True
@@ -262,15 +275,21 @@ def run(products):
                         page.goto(f"{BASE}/search?q={quote(code)}", timeout=12000)
                         # Do NOT use networkidle — wrap any wait in try/except
                         try:
-                            page.wait_for_selector("a[href*='/p/']", timeout=8000)
+                            page.wait_for_selector(
+                                f"a[href*='/p/'], a[href$='-{code}']", timeout=8000
+                            )
                         except Exception:
                             pass
-                        link = page.query_selector("a[href*='/p/']")
-                        if link:
-                            href = link.get_attribute("href")
-                            url = _safe_url(href)
-                            if url:
-                                break
+                        # Product links either use the legacy /p/ path or end
+                        # with "-<varenummer>" in the current URL scheme.
+                        for a in page.query_selector_all("a[href]"):
+                            href = a.get_attribute("href") or ""
+                            if "/p/" in href or href.rstrip("/").endswith(f"-{code}"):
+                                url = _safe_url(href)
+                                if url:
+                                    break
+                        if url:
+                            break
                     if not url:
                         page.close()
                         page = None
