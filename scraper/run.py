@@ -1,5 +1,7 @@
 """Main entry point: python run.py"""
 import logging
+import os
+import sys
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from db import get_active_products, save_resolved_url, bulk_insert_prices
@@ -21,6 +23,12 @@ GROCERY_SCRAPERS = {"oda"}
 GROCERY_CATEGORIES = {"Paracetamol", "Ibuprofen"}
 
 MAX_WORKERS = 4  # run up to 4 scrapers in parallel
+
+# A wedged Playwright call can block a scraper thread forever (a full run
+# normally takes ~1h40m; one stuck scraper once burned the whole 6h GitHub
+# Actions limit and the completed results were never inserted). After this
+# deadline the results gathered so far are inserted and the process exits.
+SCRAPE_TIMEOUT = 2.5 * 60 * 60  # seconds
 
 
 def _run_scraper(name, module, products):
@@ -45,23 +53,38 @@ def run():
     print(f"Grocery-filtered: {len(grocery_products)} products (Paracetamol/Ibuprofen)")
 
     all_rows = []
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-        futures = {
-            pool.submit(
-                _run_scraper, name, module,
-                grocery_products if name in GROCERY_SCRAPERS else products
-            ): name
-            for name, module in SCRAPERS.items()
-        }
-        for future in as_completed(futures):
+    # No `with` block: shutdown would join threads, and a hung scraper thread
+    # would block the join forever. Results are harvested via as_completed
+    # with a deadline instead, and stuck threads are abandoned at exit.
+    pool = ThreadPoolExecutor(max_workers=MAX_WORKERS)
+    futures = {
+        pool.submit(
+            _run_scraper, name, module,
+            grocery_products if name in GROCERY_SCRAPERS else products
+        ): name
+        for name, module in SCRAPERS.items()
+    }
+    stuck = []
+    try:
+        for future in as_completed(futures, timeout=SCRAPE_TIMEOUT):
             name, rows, resolved = future.result()
             for vn, url in resolved.items():
                 save_resolved_url(vn, name, url)
                 print(f"  Saved URL for {vn} on {name}")
             all_rows.extend(rows)
+    except TimeoutError:
+        stuck = sorted(name for f, name in futures.items() if not f.done())
+        print(f"\nTIMEOUT after {SCRAPE_TIMEOUT:.0f}s — gave up on: {', '.join(stuck)}")
+    pool.shutdown(wait=False, cancel_futures=True)
 
     bulk_insert_prices(all_rows)
     print(f"\n=== Done — {len(all_rows)} rows inserted ===")
+    if stuck:
+        # Non-daemon scraper threads would keep the interpreter alive at
+        # normal exit; results are already saved, so exit hard.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
 
 if __name__ == "__main__":
     run()

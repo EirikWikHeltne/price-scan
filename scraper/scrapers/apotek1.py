@@ -196,6 +196,10 @@ def run(products):
             }
         )
         context.add_init_script(_STEALTH)
+        # Cap every Playwright call (query_selector, get_attribute, ...) —
+        # the library default of 30s applies per call, and calls without an
+        # explicit timeout have hung scrape runs for hours.
+        context.set_default_timeout(15000)
 
         for prod in products:
             url = prod.get("url_apotek1")
