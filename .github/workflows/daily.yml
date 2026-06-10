@@ -8,6 +8,10 @@ on:
 jobs:
   scrape:
     runs-on: ubuntu-latest
+    # A normal run takes ~1h40m; run.py gives up on stuck scrapers after 2.5h
+    # and inserts what it has. This is the backstop above that (GitHub's
+    # default is 6h, which a single wedged browser call once burned through).
+    timeout-minutes: 200
     defaults:
       run:
         working-directory: scraper
