@@ -13,6 +13,10 @@ def code_variants(code: str) -> list[str]:
     stripped = value.lstrip("0")
     if stripped and stripped != value:
         variants.append(stripped)
+    # Nordic varenummer are 6 digits, but some sources drop leading zeros
+    # (e.g. "86757" for "086757"), so add the zero-padded form as well.
+    if value.isdigit() and len(value) < 6:
+        variants.append(value.zfill(6))
     return variants
 
 
