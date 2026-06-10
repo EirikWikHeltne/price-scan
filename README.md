@@ -67,7 +67,7 @@ Each scraper follows the same pattern:
 │   ├── requirements.txt
 │   ├── scrapers/
 │   │   ├── apotek1.py            # Sitemap + requests + Playwright
-│   │   ├── vitusapotek.py        # Playwright
+│   │   ├── vitusapotek.py        # JSON API (/api/products)
 │   │   ├── boots.py              # requests + BeautifulSoup
 │   │   ├── farmasiet.py          # requests + Playwright fallback
 │   │   ├── oda.py                # API + Playwright (grocery)
