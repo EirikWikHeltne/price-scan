@@ -57,17 +57,21 @@ def _fetch_items(skus):
 def run(products):
     results, resolved = [], {}
 
-    # Map every SKU variant (with and without leading zeros) back to the
-    # product's varenummer so GraphQL results can be matched up again.
-    sku_to_vn = {}
+    # Query every SKU variant (with and without leading zeros) and key the
+    # results by SKU. Each product then resolves its own variants — the DB
+    # contains duplicate rows for the same item ("051946" and "51946"), so a
+    # variant->product map would let only one of them claim the result.
+    wanted = []
+    seen = set()
     for prod in products:
         for code in code_variants(prod["varenummer"]):
-            sku_to_vn.setdefault(code, prod["varenummer"])
+            if code not in seen:
+                seen.add(code)
+                wanted.append(code)
 
-    items_by_vn = {}
-    skus = list(sku_to_vn)
-    for i in range(0, len(skus), _BATCH):
-        batch = skus[i:i + _BATCH]
+    items_by_sku = {}
+    for i in range(0, len(wanted), _BATCH):
+        batch = wanted[i:i + _BATCH]
         try:
             items = _fetch_items(batch)
         except Exception as e:
@@ -80,13 +84,15 @@ def run(products):
                 except Exception as e2:
                     print(f"  [apotera] GraphQL error {sku}: {e2}")
         for item in items:
-            vn = sku_to_vn.get(str(item.get("sku", "")).strip())
-            if vn:
-                items_by_vn.setdefault(vn, item)
+            items_by_sku.setdefault(str(item.get("sku", "")).strip(), item)
         time.sleep(0.2)
 
     for prod in products:
-        item = items_by_vn.get(prod["varenummer"])
+        item = None
+        for code in code_variants(prod["varenummer"]):
+            item = items_by_sku.get(code)
+            if item:
+                break
         pris, lager = None, None
         if item:
             try:
