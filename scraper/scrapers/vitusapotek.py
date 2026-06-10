@@ -118,14 +118,13 @@ def run(products):
                 wanted.append(code)
 
     items_by_id = {}
-    _batched(
-        "/api/products", wanted,
-        lambda payload: items_by_id.update(
-            {str(item.get("id", "")).strip(): item}
-            for item in payload
-            if isinstance(item, dict)
-        ),
-    )
+
+    def _collect_items(payload):
+        for item in (payload if isinstance(payload, list) else []):
+            if isinstance(item, dict):
+                items_by_id.setdefault(str(item.get("id", "")).strip(), item)
+
+    _batched("/api/products", wanted, _collect_items)
 
     stock_by_id = {}
     _batched(
