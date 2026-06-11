@@ -204,29 +204,45 @@ def run(products):
         for prod in products:
             url = prod.get("url_apotek1")
 
-            # Resolve URL: DB cache → sitemap index → browser search
+            # Resolve URL: DB cache → sitemap index → browser search.
+            # Sitemap keys come from the URL slug, which may keep or drop
+            # leading zeros ("051946" vs "51946"), so try every variant.
+            variants = code_variants(prod["varenummer"])
             if not url:
-                url = sitemap_index.get(prod["varenummer"])
-                if url:
-                    resolved[prod["varenummer"]] = url
+                for code in variants:
+                    url = sitemap_index.get(code)
+                    if url:
+                        resolved[prod["varenummer"]] = url
+                        break
 
             if not url:
                 page = None
                 try:
                     page = context.new_page()
-                    for code in code_variants(prod["varenummer"]):
+                    href, fallback_href = None, None
+                    for code in variants:
                         page.goto(f"{BASE}/search?q={quote(code)}", timeout=15000)
-                    try:
-                        page.wait_for_selector(
-                            f"a[href$='-{prod['varenummer']}p'], a[href*='/produkter/']", timeout=5000
-                        )
-                    except Exception:
-                        pass
-                    link = page.query_selector(f"a[href$='-{code}p']")
-                    if not link:
-                        link = page.query_selector("a[href*='/produkter/']")
-                    if link:
-                        href = link.get_attribute("href")
+                        try:
+                            page.wait_for_selector(
+                                f"a[href$='-{code}p'], a[href*='/produkter/']", timeout=5000
+                            )
+                        except Exception:
+                            pass
+                        # The product URL may use any variant of the code,
+                        # regardless of which one the search was queried with.
+                        for v in variants:
+                            link = page.query_selector(f"a[href$='-{v}p']")
+                            if link:
+                                href = link.get_attribute("href")
+                                break
+                        if href:
+                            break
+                        if not fallback_href:
+                            link = page.query_selector("a[href*='/produkter/']")
+                            if link:
+                                fallback_href = link.get_attribute("href")
+                    href = href or fallback_href
+                    if href:
                         url = _safe_url(href)
                         resolved[prod["varenummer"]] = url
                     else:
