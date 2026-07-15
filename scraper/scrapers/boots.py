@@ -1,26 +1,14 @@
 """Boots.no — SSR, URL ends in -{varenummer}. No browser needed."""
-import json, re, time
+import re, time
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import quote, urlparse
-from ._common import extract_stock, code_variants
+from urllib.parse import quote
+from ._common import extract_stock, code_variants, safe_url, extract_jsonld_price
 
 BUTIKK       = "boots"
 BASE         = "https://www.boots.no"
 ALLOWED_HOST = "www.boots.no"
 HEADS        = {"User-Agent": "Mozilla/5.0", "Accept-Language": "nb-NO"}
-
-
-def _safe_url(href):
-    """Return absolute URL only if it resolves to the expected host."""
-    url = href if href.startswith("http") else BASE + href
-    try:
-        host = urlparse(url).netloc
-        if host in (ALLOWED_HOST, ALLOWED_HOST.removeprefix("www.")):
-            return url
-    except Exception:
-        pass
-    return None
 
 
 def search_url(varenummer):
@@ -32,7 +20,7 @@ def search_url(varenummer):
             soup = BeautifulSoup(r.text, "lxml")
             link = soup.find("a", href=re.compile(f"-{code}$"))
             if link:
-                return _safe_url(link["href"])
+                return safe_url(link["href"], BASE, ALLOWED_HOST)
         except Exception:
             pass
     return None
@@ -44,15 +32,9 @@ def fetch_price(url):
         lager = extract_stock(r.text)
 
         # Primary: JSON-LD
-        for tag in soup.find_all("script", type="application/ld+json"):
-            try:
-                d = json.loads(tag.string or "")
-                if isinstance(d, dict) and "offers" in d:
-                    price = float(d["offers"].get("price", 0)) or None
-                    if price:
-                        return price, lager
-            except Exception:
-                pass
+        price = extract_jsonld_price(r.text)
+        if price:
+            return price, lager
 
         # Fallback: search raw HTML for price pattern like "90,90" or "90.90"
         # Boots renders price as plain text near the product title
@@ -82,6 +64,7 @@ def run(products):
         url = p.get("url_boots") or search_url(p["varenummer"])
         if not url:
             print(f"  [boots] no URL: {p['varenummer']}")
+            results.append({"produkt_id": p["id"], "butikk": BUTIKK, "pris": None, "pa_lager": None})
             continue
         if not p.get("url_boots"):
             resolved[p["varenummer"]] = url

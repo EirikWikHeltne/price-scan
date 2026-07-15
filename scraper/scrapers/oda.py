@@ -1,9 +1,9 @@
 """Oda.com — Next.js CSR grocery store. API + Playwright with response interception."""
 import re, time, json, requests
-from urllib.parse import quote, urlparse
+from urllib.parse import quote
 from playwright.sync_api import sync_playwright
 from playwright_stealth import Stealth
-from ._common import code_variants
+from ._common import code_variants, safe_url
 
 BUTIKK       = "oda"
 BASE         = "https://oda.com"
@@ -23,17 +23,6 @@ _stealth = Stealth(
     navigator_languages_override=("nb-NO", "nb"),
     navigator_platform_override="Linux x86_64",
 )
-
-
-def _safe_url(href):
-    url = href if href.startswith("http") else BASE + href
-    try:
-        host = urlparse(url).netloc
-        if host in (ALLOWED_HOST, "www." + ALLOWED_HOST):
-            return url
-    except Exception:
-        pass
-    return None
 
 
 def _dismiss_cookie_banner(page):
@@ -79,7 +68,7 @@ def _search_url_api(query: str) -> str | None:
             item = entry.get("item", entry) if isinstance(entry, dict) else {}
             front_url = item.get("front_url", "")
             if front_url:
-                return _safe_url(front_url)
+                return safe_url(front_url, BASE, ALLOWED_HOST)
     except Exception:
         pass
     return None
@@ -148,7 +137,7 @@ def _search_url_browser(context, prod: dict) -> str | None:
                 link = page.query_selector("a[href*='/no/products/']")
                 if link:
                     href = link.get_attribute("href")
-                    url = _safe_url(href)
+                    url = safe_url(href, BASE, ALLOWED_HOST)
                     if url:
                         page.close()
                         return url
@@ -310,6 +299,9 @@ def run(products):
         screen={"width": 1920, "height": 1080},
         extra_http_headers={"Accept-Language": "nb-NO,nb;q=0.9,no;q=0.8"},
     )
+    # Cap every Playwright call — the 30s library default applies per
+    # call, and uncapped calls have hung scrape runs for hours.
+    context.set_default_timeout(15000)
     _stealth.apply_stealth_sync(context)
 
     try:

@@ -1,24 +1,15 @@
 """Farmasiet.no — requests-first price extraction, Playwright fallback."""
-import re, time, json, requests
-from urllib.parse import quote, urlparse
+import re, time, requests
+from urllib.parse import quote
 from playwright.sync_api import sync_playwright
-from ._common import extract_stock, code_variants
+from ._common import (
+    extract_stock, code_variants, safe_url,
+    extract_price_from_html, extract_price_from_page,
+)
 
 BUTIKK       = "farmasiet"
 BASE         = "https://www.farmasiet.no"
 ALLOWED_HOST = "www.farmasiet.no"
-
-
-def _safe_url(href):
-    """Return absolute URL only if it resolves to the expected host."""
-    url = BASE + href if href.startswith("/") else href
-    try:
-        host = urlparse(url).netloc
-        if host in (ALLOWED_HOST, ALLOWED_HOST.removeprefix("www.")):
-            return url
-    except Exception:
-        pass
-    return None
 
 _UA = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -36,96 +27,6 @@ def _valid_product_url(url):
     return bool(url and re.search(r",\d+$", url))
 
 
-def _extract_price_from_html(html):
-    """Extract price from server-rendered HTML."""
-    # Layer 1: JSON-LD
-    for block in re.findall(
-        r'<script[^>]+application/ld\+json[^>]*>(.*?)</script>', html, re.DOTALL
-    ):
-        try:
-            d = json.loads(block)
-            for item in (d if isinstance(d, list) else [d]):
-                if not isinstance(item, dict):
-                    continue
-                offer = item.get("offers")
-                if offer:
-                    if isinstance(offer, list):
-                        offer = offer[0]
-                    pris = float(offer.get("price", 0)) or None
-                    if pris:
-                        return pris
-        except Exception:
-            pass
-    # Layer 2: data-testid content attribute
-    m = re.search(r'data-testid=["\'][^"\']*price[^"\']*["\'][^>]*content=["\']([0-9.]+)["\']', html, re.IGNORECASE)
-    if not m:
-        m = re.search(r'content=["\']([0-9.]+)["\'][^>]*data-testid=["\'][^"\']*price[^"\']*["\']', html, re.IGNORECASE)
-    if m:
-        try:
-            return float(m.group(1))
-        except Exception:
-            pass
-    # Layer 3: generic "price" key in page source
-    m = re.search(r'"price"\s*:\s*"?([\d]+(?:[.,]\d+)?)"?', html)
-    if m:
-        try:
-            return float(m.group(1).replace(",", "."))
-        except Exception:
-            pass
-    return None
-
-
-def _extract_price_from_page(page):
-    """Extract price from a rendered Playwright page."""
-    # Layer 1: JSON-LD
-    for tag in page.query_selector_all("script[type='application/ld+json']"):
-        try:
-            d = json.loads(tag.inner_text())
-            for item in (d if isinstance(d, list) else [d]):
-                if not isinstance(item, dict):
-                    continue
-                offer = item.get("offers")
-                if offer:
-                    if isinstance(offer, list):
-                        offer = offer[0]
-                    pris = float(offer.get("price", 0)) or None
-                    if pris:
-                        return pris
-        except Exception:
-            pass
-    # Layer 2: data-testid
-    el = page.query_selector("[data-testid*='price']")
-    if el:
-        content = el.get_attribute("content")
-        if content:
-            try:
-                pris = float(content)
-                if pris:
-                    return pris
-            except Exception:
-                pass
-        raw = el.inner_text().replace("kr", "").replace(",", ".").strip()
-        m = re.search(r"(\d+\.?\d*)", raw)
-        if m:
-            return float(m.group(1))
-    # Layer 3: CSS class selectors
-    for sel in ["[class*='price']", "[class*='Price']"]:
-        el = page.query_selector(sel)
-        if el:
-            raw = el.inner_text().replace("kr", "").replace(",", ".").strip()
-            m = re.search(r"(\d+\.?\d*)", raw)
-            if m:
-                return float(m.group(1))
-    # Layer 4: regex on full source
-    m = re.search(r'"price"\s*:\s*"?([\d]+(?:[.,]\d+)?)"?', page.content())
-    if m:
-        try:
-            return float(m.group(1).replace(",", "."))
-        except Exception:
-            pass
-    return None
-
-
 def run(products):
     results, resolved = [], {}
     with sync_playwright() as p:
@@ -138,6 +39,9 @@ def run(products):
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             }
         )
+        # Cap every Playwright call — the 30s library default applies per
+        # call, and uncapped calls have hung scrape runs for hours.
+        context.set_default_timeout(15000)
 
         for prod in products:
             url = prod.get("url_farmasiet")
@@ -150,17 +54,22 @@ def run(products):
                 page = None
                 try:
                     page = context.new_page()
+                    # Scan results per variant — a bare `goto` loop would only
+                    # ever examine the last variant's search page.
                     for code in code_variants(prod["varenummer"]):
                         page.goto(f"{BASE}/search?q={quote(code)}", timeout=12000)
-                    try:
-                        page.wait_for_selector("a[href*='/catalog/']", timeout=8000)
-                    except Exception:
-                        pass
-                    for link in page.query_selector_all("a[href*='/catalog/']"):
-                        href = link.get_attribute("href")
-                        if _valid_product_url(href):
-                            url = _safe_url(href)
-                            resolved[prod["varenummer"]] = url
+                        try:
+                            page.wait_for_selector("a[href*='/catalog/']", timeout=8000)
+                        except Exception:
+                            pass
+                        for link in page.query_selector_all("a[href*='/catalog/']"):
+                            href = link.get_attribute("href")
+                            if _valid_product_url(href):
+                                url = safe_url(href, BASE, ALLOWED_HOST)
+                                if url:
+                                    resolved[prod["varenummer"]] = url
+                                    break
+                        if url:
                             break
                     page.close()
                 except Exception as e:
@@ -182,7 +91,7 @@ def run(products):
             try:
                 r = requests.get(url, headers=_REQ_HEADERS, timeout=10)
                 if r.status_code == 200:
-                    pris = _extract_price_from_html(r.text)
+                    pris = extract_price_from_html(r.text)
                     lager = extract_stock(r.text)
             except Exception as e:
                 print(f"  [farmasiet] requests error {prod['varenummer']}: {e}")
@@ -201,7 +110,7 @@ def run(products):
                         )
                     except Exception:
                         pass  # Continue and attempt extraction anyway
-                    pris = _extract_price_from_page(page)
+                    pris = extract_price_from_page(page)
                     if lager is None:
                         lager = extract_stock(page.content())
                     page.close()
