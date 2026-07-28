@@ -1,24 +1,15 @@
 """Apotek1.no — sitemap URL discovery, requests price extraction, Playwright fallback."""
-import re, time, json, requests
+import re, time, requests
 from urllib.parse import quote, urlparse
 from playwright.sync_api import sync_playwright
-from ._common import extract_stock, code_variants
+from ._common import (
+    extract_stock, code_variants, safe_url,
+    extract_price_from_html, extract_price_from_page,
+)
 
 BUTIKK       = "apotek1"
 BASE         = "https://www.apotek1.no"
 ALLOWED_HOST = "www.apotek1.no"
-
-
-def _safe_url(href):
-    """Return absolute URL only if it resolves to the expected host."""
-    url = BASE + href if href.startswith("/") else href
-    try:
-        host = urlparse(url).netloc
-        if host in (ALLOWED_HOST, ALLOWED_HOST.removeprefix("www.")):
-            return url
-    except Exception:
-        pass
-    return None
 
 _UA = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -78,92 +69,6 @@ def _build_sitemap_index():
     _fetch_and_index(f"{BASE}/sitemap.xml", index)
     print(f"  [apotek1] sitemap: {len(index)} product URLs indexed")
     return index
-
-
-# ---------------------------------------------------------------------------
-# Price extraction helpers
-# ---------------------------------------------------------------------------
-
-def _extract_price_from_html(html):
-    """Try to extract price from server-rendered HTML (no JS required)."""
-    # JSON-LD blocks
-    for block in re.findall(
-        r'<script[^>]+application/ld\+json[^>]*>(.*?)</script>', html, re.DOTALL
-    ):
-        try:
-            d = json.loads(block)
-            for item in (d if isinstance(d, list) else [d]):
-                if not isinstance(item, dict):
-                    continue
-                offer = item.get("offers")
-                if offer:
-                    if isinstance(offer, list):
-                        offer = offer[0]
-                    pris = float(offer.get("price", 0)) or None
-                    if pris:
-                        return pris
-        except Exception:
-            pass
-    # Generic "price" key anywhere in page source
-    m = re.search(r'"price"\s*:\s*"?([\d]+(?:[.,]\d+)?)"?', html)
-    if m:
-        try:
-            return float(m.group(1).replace(",", "."))
-        except Exception:
-            pass
-    return None
-
-
-def _extract_price_from_page(page):
-    """Extract price from a rendered Playwright page."""
-    # Layer 1: JSON-LD
-    for tag in page.query_selector_all("script[type='application/ld+json']"):
-        try:
-            d = json.loads(tag.inner_text())
-            for item in (d if isinstance(d, list) else [d]):
-                if not isinstance(item, dict):
-                    continue
-                offer = item.get("offers")
-                if offer:
-                    if isinstance(offer, list):
-                        offer = offer[0]
-                    pris = float(offer.get("price", 0)) or None
-                    if pris:
-                        return pris
-        except Exception:
-            pass
-    # Layer 2: data-testid
-    for sel in ["[data-testid='price']", "[data-testid*='price']", "[data-testid*='Price']"]:
-        el = page.query_selector(sel)
-        if el:
-            content = el.get_attribute("content")
-            if content:
-                try:
-                    pris = float(content)
-                    if pris:
-                        return pris
-                except Exception:
-                    pass
-            raw = el.inner_text().replace("kr", "").replace(",", ".").strip()
-            m = re.search(r"(\d+\.?\d*)", raw)
-            if m:
-                return float(m.group(1))
-    # Layer 3: CSS class selectors
-    for sel in ["[class*='price']", "[class*='Price']", "[class*='pris']", "[class*='Pris']"]:
-        el = page.query_selector(sel)
-        if el:
-            raw = el.inner_text().replace("kr", "").replace(",", ".").strip()
-            m = re.search(r"(\d+\.?\d*)", raw)
-            if m:
-                return float(m.group(1))
-    # Layer 4: Regex on full page source
-    m = re.search(r'"price"\s*:\s*"?([\d]+(?:[.,]\d+)?)"?', page.content())
-    if m:
-        try:
-            return float(m.group(1).replace(",", "."))
-        except Exception:
-            pass
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -243,8 +148,9 @@ def run(products):
                                 fallback_href = link.get_attribute("href")
                     href = href or fallback_href
                     if href:
-                        url = _safe_url(href)
-                        resolved[prod["varenummer"]] = url
+                        url = safe_url(href, BASE, ALLOWED_HOST)
+                        if url:
+                            resolved[prod["varenummer"]] = url
                     else:
                         print(f"  [apotek1] no search result for {prod['varenummer']}")
                     page.close()
@@ -267,7 +173,7 @@ def run(products):
             try:
                 r = requests.get(url, headers=_REQ_HEADERS, timeout=10)
                 if r.status_code == 200:
-                    pris = _extract_price_from_html(r.text)
+                    pris = extract_price_from_html(r.text)
                     lager = extract_stock(r.text)
             except Exception as e:
                 print(f"  [apotek1] requests error {prod['varenummer']}: {e}")
@@ -286,7 +192,7 @@ def run(products):
                         )
                     except Exception:
                         pass  # Continue and attempt extraction anyway
-                    pris = _extract_price_from_page(page)
+                    pris = extract_price_from_page(page)
                     if lager is None:
                         lager = extract_stock(page.content())
                     page.close()

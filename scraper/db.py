@@ -1,4 +1,5 @@
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from supabase import create_client
 from dotenv import load_dotenv
@@ -26,9 +27,30 @@ def save_resolved_url(varenummer: str, butikk: str, url: str):
         {f"url_{butikk}": url}
     ).eq("varenummer", varenummer).execute()
 
+_INSERT_CHUNK = 500
+_INSERT_RETRIES = 3
+
 def bulk_insert_prices(rows: list[dict]):
-    if rows:
-        get_client().table("priser").insert(rows).execute()
+    """Insert price rows in chunks, retrying each chunk on transient errors.
+
+    These rows represent hours of scraping; a single failed request must not
+    lose the whole run, and a failed chunk must not lose the other chunks.
+    """
+    failed = 0
+    for i in range(0, len(rows), _INSERT_CHUNK):
+        chunk = rows[i:i + _INSERT_CHUNK]
+        for attempt in range(1, _INSERT_RETRIES + 1):
+            try:
+                get_client().table("priser").insert(chunk).execute()
+                break
+            except Exception as e:
+                if attempt == _INSERT_RETRIES:
+                    failed += len(chunk)
+                    print(f"  [db] insert chunk failed after {attempt} attempts: {e}")
+                else:
+                    time.sleep(2 ** attempt)
+    if failed:
+        raise RuntimeError(f"{failed}/{len(rows)} price rows could not be inserted")
 
 def get_prishistorikk(
     produkt_id: int,

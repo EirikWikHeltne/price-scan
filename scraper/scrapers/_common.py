@@ -1,4 +1,143 @@
 """Shared helpers used by multiple scrapers."""
+import json
+import re
+from urllib.parse import urlparse
+
+
+def safe_url(href: str | None, base: str, allowed_host: str) -> str | None:
+    """Return an absolute URL only if it resolves to the expected host.
+
+    Accepts absolute http(s) URLs and root-relative paths; anything else
+    (javascript:, protocol-relative, bare fragments) is rejected.
+    """
+    if not href:
+        return None
+    if href.startswith("/"):
+        url = base + href
+    elif href.startswith("http"):
+        url = href
+    else:
+        return None
+    try:
+        host = urlparse(url).netloc
+        bare = allowed_host.removeprefix("www.")
+        if host in (bare, "www." + bare):
+            return url
+    except Exception:
+        pass
+    return None
+
+
+_PRICE_KEY_RE = re.compile(r'"price"\s*:\s*"?(\d+(?:[.,]\d+)?)"?')
+
+
+def _price_from_jsonld_text(text: str) -> float | None:
+    """Extract an offer price from one JSON-LD document."""
+    try:
+        d = json.loads(text)
+    except Exception:
+        return None
+    for item in (d if isinstance(d, list) else [d]):
+        if not isinstance(item, dict):
+            continue
+        offer = item.get("offers")
+        if offer:
+            if isinstance(offer, list):
+                offer = offer[0]
+            try:
+                pris = float(offer.get("price", 0)) or None
+            except Exception:
+                pris = None
+            if pris:
+                return pris
+    return None
+
+
+def extract_jsonld_price(html: str) -> float | None:
+    """Extract an offer price from any JSON-LD block in raw HTML."""
+    for block in re.findall(
+        r'<script[^>]+application/ld\+json[^>]*>(.*?)</script>', html, re.DOTALL
+    ):
+        pris = _price_from_jsonld_text(block)
+        if pris:
+            return pris
+    return None
+
+
+def extract_price_from_html(html: str) -> float | None:
+    """Extract price from server-rendered HTML (no JS required)."""
+    # Layer 1: JSON-LD
+    pris = extract_jsonld_price(html)
+    if pris:
+        return pris
+    # Layer 2: data-testid content attribute
+    m = re.search(
+        r'data-testid=["\'][^"\']*price[^"\']*["\'][^>]*content=["\']([0-9.]+)["\']',
+        html, re.IGNORECASE,
+    ) or re.search(
+        r'content=["\']([0-9.]+)["\'][^>]*data-testid=["\'][^"\']*price[^"\']*["\']',
+        html, re.IGNORECASE,
+    )
+    if m:
+        try:
+            pris = float(m.group(1))
+            if pris:
+                return pris
+        except ValueError:
+            pass
+    # Layer 3: generic "price" key anywhere in page source
+    m = _PRICE_KEY_RE.search(html)
+    if m:
+        try:
+            return float(m.group(1).replace(",", ".")) or None
+        except ValueError:
+            pass
+    return None
+
+
+def extract_price_from_page(page) -> float | None:
+    """Extract price from a rendered Playwright page."""
+    # Layer 1: JSON-LD
+    for tag in page.query_selector_all("script[type='application/ld+json']"):
+        try:
+            pris = _price_from_jsonld_text(tag.inner_text())
+        except Exception:
+            pris = None
+        if pris:
+            return pris
+    # Layer 2: data-testid
+    for sel in ["[data-testid='price']", "[data-testid*='price']", "[data-testid*='Price']"]:
+        el = page.query_selector(sel)
+        if el:
+            content = el.get_attribute("content")
+            if content:
+                try:
+                    pris = float(content)
+                    if pris:
+                        return pris
+                except ValueError:
+                    pass
+            raw = el.inner_text().replace("kr", "").replace(",", ".").strip()
+            m = re.search(r"(\d+\.?\d*)", raw)
+            if m:
+                return float(m.group(1))
+    # Layer 3: CSS class selectors
+    for sel in ["[class*='price']", "[class*='Price']", "[class*='pris']", "[class*='Pris']"]:
+        el = page.query_selector(sel)
+        if el:
+            raw = el.inner_text().replace("kr", "").replace(",", ".").strip()
+            m = re.search(r"(\d+\.?\d*)", raw)
+            if m:
+                return float(m.group(1))
+    # Layer 4: regex on full page source
+    m = _PRICE_KEY_RE.search(page.content())
+    if m:
+        try:
+            return float(m.group(1).replace(",", ".")) or None
+        except ValueError:
+            pass
+    return None
+
 
 def code_variants(code: str) -> list[str]:
     """Return search variants for product codes.

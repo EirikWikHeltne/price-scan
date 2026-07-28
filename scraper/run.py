@@ -32,7 +32,7 @@ SCRAPE_TIMEOUT = 2.5 * 60 * 60  # seconds
 
 
 def _run_scraper(name, module, products):
-    """Run a single scraper; returns (name, rows, resolved) or (name, error)."""
+    """Run a single scraper; returns (name, rows, resolved) — empty on crash."""
     print(f"\n--- {name} ---")
     try:
         rows, resolved = module.run(products)
@@ -69,6 +69,8 @@ def run():
         for future in as_completed(futures, timeout=SCRAPE_TIMEOUT):
             name, rows, resolved = future.result()
             for vn, url in resolved.items():
+                if not url:
+                    continue
                 save_resolved_url(vn, name, url)
                 print(f"  Saved URL for {vn} on {name}")
             all_rows.extend(rows)
@@ -77,14 +79,20 @@ def run():
         print(f"\nTIMEOUT after {SCRAPE_TIMEOUT:.0f}s — gave up on: {', '.join(stuck)}")
     pool.shutdown(wait=False, cancel_futures=True)
 
-    bulk_insert_prices(all_rows)
-    print(f"\n=== Done — {len(all_rows)} rows inserted ===")
+    exit_code = 0
+    try:
+        bulk_insert_prices(all_rows)
+        print(f"\n=== Done — {len(all_rows)} rows inserted ===")
+    except Exception as e:
+        print(f"\n=== FAILED to insert prices: {e} ===")
+        exit_code = 1
     if stuck:
         # Non-daemon scraper threads would keep the interpreter alive at
         # normal exit; results are already saved, so exit hard.
         sys.stdout.flush()
         sys.stderr.flush()
-        os._exit(0)
+        os._exit(exit_code)
+    sys.exit(exit_code)
 
 if __name__ == "__main__":
     run()
