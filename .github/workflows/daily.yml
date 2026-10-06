@@ -5,6 +5,11 @@ on:
     - cron: '0 2 * * *'
   workflow_dispatch:
 
+# A manual run overlapping the nightly one would insert every price twice.
+concurrency:
+  group: daily-scrape
+  cancel-in-progress: false
+
 jobs:
   scrape:
     runs-on: ubuntu-latest
@@ -38,12 +43,9 @@ jobs:
           key: playwright-${{ hashFiles('scraper/requirements.txt') }}
 
       - name: Install Playwright + Chromium
-        run: |
-          playwright install chromium
-          sudo apt-get install -y \
-            libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
-            libcups2 libdrm2 libxkbcommon0 libxcomposite1 \
-            libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2t64
+        # --with-deps refreshes the apt index and installs exactly the system
+        # libraries this Playwright version needs on the runner's Ubuntu.
+        run: playwright install --with-deps chromium
 
       - name: Seed products
         env:

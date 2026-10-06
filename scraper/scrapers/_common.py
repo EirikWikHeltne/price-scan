@@ -95,6 +95,23 @@ def extract_price_from_html(html: str) -> float | None:
     return None
 
 
+def parse_price_text(text: str | None) -> float | None:
+    """Parse a displayed Norwegian price such as "1 299,00 kr" or "kr 89,-".
+
+    Spaces (incl. no-break/thin spaces) are thousands separators and are
+    dropped before matching, so "1 299,00" is 1299.0 rather than 1.0.
+    Returns None for zero or unparseable text.
+    """
+    if not text:
+        return None
+    compact = re.sub(r"(?<=\d)[\s\u00a0\u202f]+(?=\d)", "", text)
+    m = re.search(r"(\d+)(?:[.,](\d{1,2}))?", compact)
+    if not m:
+        return None
+    pris = float(f"{m.group(1)}.{m.group(2) or 0}")
+    return pris or None
+
+
 def extract_price_from_page(page) -> float | None:
     """Extract price from a rendered Playwright page."""
     # Layer 1: JSON-LD
@@ -117,18 +134,16 @@ def extract_price_from_page(page) -> float | None:
                         return pris
                 except ValueError:
                     pass
-            raw = el.inner_text().replace("kr", "").replace(",", ".").strip()
-            m = re.search(r"(\d+\.?\d*)", raw)
-            if m:
-                return float(m.group(1))
+            pris = parse_price_text(el.inner_text())
+            if pris:
+                return pris
     # Layer 3: CSS class selectors
     for sel in ["[class*='price']", "[class*='Price']", "[class*='pris']", "[class*='Pris']"]:
         el = page.query_selector(sel)
         if el:
-            raw = el.inner_text().replace("kr", "").replace(",", ".").strip()
-            m = re.search(r"(\d+\.?\d*)", raw)
-            if m:
-                return float(m.group(1))
+            pris = parse_price_text(el.inner_text())
+            if pris:
+                return pris
     # Layer 4: regex on full page source
     m = _PRICE_KEY_RE.search(page.content())
     if m:

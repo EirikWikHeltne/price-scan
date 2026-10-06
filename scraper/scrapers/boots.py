@@ -28,6 +28,11 @@ def search_url(varenummer):
 def fetch_price(url):
     try:
         r = requests.get(url, headers=HEADS, timeout=12)
+        if r.status_code != 200:
+            # A 404/error page still contains prices (related products,
+            # header promos) that the regex fallbacks below would pick up.
+            print(f"  [boots] HTTP {r.status_code} for {url}")
+            return None, None
         soup = BeautifulSoup(r.text, "lxml")
         lager = extract_stock(r.text)
 
