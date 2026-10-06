@@ -43,9 +43,16 @@ jobs:
           key: playwright-${{ hashFiles('scraper/requirements.txt') }}
 
       - name: Install Playwright + Chromium
-        # --with-deps refreshes the apt index and installs exactly the system
-        # libraries this Playwright version needs on the runner's Ubuntu.
-        run: playwright install --with-deps chromium
+        # Not `--with-deps`: Playwright 1.44 predates Ubuntu 24.04 and asks for
+        # libasound2, which noble renamed to libasound2t64. Refresh the apt
+        # index first so a stale runner image can't fail the install.
+        run: |
+          playwright install chromium
+          sudo apt-get update
+          sudo apt-get install -y \
+            libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
+            libcups2 libdrm2 libxkbcommon0 libxcomposite1 \
+            libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2t64
 
       - name: Seed products
         env:
