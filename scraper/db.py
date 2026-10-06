@@ -19,8 +19,20 @@ def get_client():
         _client = create_client(url, key)
     return _client
 
+_PAGE = 1000  # PostgREST's default max-rows; larger responses are silently truncated
+
 def get_active_products():
-    return get_client().table("produkter").select("*").eq("aktiv", True).execute().data
+    """Return all active products, paging past the server's row cap."""
+    products = []
+    while True:
+        page = (
+            get_client().table("produkter").select("*").eq("aktiv", True)
+            .order("id").range(len(products), len(products) + _PAGE - 1)
+            .execute().data
+        )
+        products.extend(page)
+        if len(page) < _PAGE:
+            return products
 
 def save_resolved_url(varenummer: str, butikk: str, url: str):
     get_client().table("produkter").update(

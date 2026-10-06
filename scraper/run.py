@@ -2,6 +2,7 @@
 import logging
 import os
 import sys
+import traceback
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from db import get_active_products, save_resolved_url, bulk_insert_prices
@@ -41,7 +42,33 @@ def _run_scraper(name, module, products):
         return name, rows, resolved
     except Exception as e:
         print(f"  {name} CRASH: {e}")
+        traceback.print_exc()
         return name, [], {}
+
+
+# priser.pris is numeric(8,2): anything >= 10^6 overflows the column and fails
+# the whole insert chunk (500 rows). No product we track costs anywhere near
+# this, so out-of-range values are extraction errors — store them as missing.
+MAX_PRICE = 100_000
+
+
+def _sanitize(rows):
+    """Null out impossible prices so one bad value can't sink an insert chunk."""
+    for r in rows:
+        pris = r.get("pris")
+        if pris is None:
+            continue
+        try:
+            pris = round(float(pris), 2)
+        except (TypeError, ValueError):
+            pris = None
+        if pris is not None and not (0 < pris < MAX_PRICE):
+            pris = None
+        if pris is None:
+            print(f"  [{r.get('butikk')}] discarding invalid price {r.get('pris')!r} "
+                  f"for produkt_id {r.get('produkt_id')}")
+        r["pris"] = pris
+    return rows
 
 
 def run():
@@ -68,12 +95,17 @@ def run():
     try:
         for future in as_completed(futures, timeout=SCRAPE_TIMEOUT):
             name, rows, resolved = future.result()
+            # Collect rows first: a failed URL cache write must never cost
+            # the prices already scraped.
+            all_rows.extend(rows)
             for vn, url in resolved.items():
                 if not url:
                     continue
-                save_resolved_url(vn, name, url)
-                print(f"  Saved URL for {vn} on {name}")
-            all_rows.extend(rows)
+                try:
+                    save_resolved_url(vn, name, url)
+                    print(f"  Saved URL for {vn} on {name}")
+                except Exception as e:
+                    print(f"  Could not save URL for {vn} on {name}: {e}")
     except TimeoutError:
         stuck = sorted(name for f, name in futures.items() if not f.done())
         print(f"\nTIMEOUT after {SCRAPE_TIMEOUT:.0f}s — gave up on: {', '.join(stuck)}")
@@ -81,7 +113,7 @@ def run():
 
     exit_code = 0
     try:
-        bulk_insert_prices(all_rows)
+        bulk_insert_prices(_sanitize(all_rows))
         print(f"\n=== Done — {len(all_rows)} rows inserted ===")
     except Exception as e:
         print(f"\n=== FAILED to insert prices: {e} ===")
@@ -93,6 +125,7 @@ def run():
         sys.stderr.flush()
         os._exit(exit_code)
     sys.exit(exit_code)
+
 
 if __name__ == "__main__":
     run()

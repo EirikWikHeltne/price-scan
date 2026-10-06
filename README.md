@@ -56,6 +56,16 @@ Each scraper follows the same pattern:
 4. Fetch the price using HTTP requests first, Playwright as fallback
 5. Insert all results into the `priser` table with a timestamp
 
+## Tests
+
+Offline unit tests cover the shared price/stock parsing, API-response parsing and the pre-insert sanity checks. They run on every pull request (`.github/workflows/tests.yml`) and locally with:
+
+```bash
+cd scraper
+pip install -r requirements.txt pytest
+python -m pytest
+```
+
 ## Project structure
 
 ```
@@ -72,6 +82,7 @@ Each scraper follows the same pattern:
 │   │   ├── farmasiet.py          # requests + Playwright fallback
 │   │   ├── oda.py                # API + Playwright (grocery)
 │   │   └── apotera.py            # Playwright
+│   ├── tests/                    # Offline unit tests (pytest)
 │   └── scripts/
 │       ├── products.csv          # Product list — edit this to add/remove products
 │       └── seed_products.py      # Upserts products.csv into Supabase
