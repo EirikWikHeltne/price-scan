@@ -70,10 +70,17 @@ def get_prishistorikk(
     fra_dato: str | None = None,
     til_dato: str | None = None,
     butikk: str | None = None,
+    daglig: bool = False,
 ) -> list[dict]:
+    """Price history for one product.
+
+    daglig=True reads prishistorikk_daglig instead: one row per retailer per
+    day, with days the scraper didn't run filled from the last known
+    observation (er_utfylt = True), so outages don't leave holes.
+    """
     query = (
         get_client()
-        .table("prishistorikk")
+        .table("prishistorikk_daglig" if daglig else "prishistorikk")
         .select("*")
         .eq("produkt_id", produkt_id)
     )
@@ -90,6 +97,6 @@ def get_prishistorikk(
     if til_dato:
         query = query.lte("dato", til_dato)
 
-    query = query.order("scraped_at", desc=True)
+    query = query.order("dato" if daglig else "scraped_at", desc=True)
 
     return query.execute().data

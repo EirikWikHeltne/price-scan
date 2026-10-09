@@ -8,7 +8,7 @@ Prices are scraped every night at 02:00 UTC and stored in Supabase. The scraper 
 
 **1. Supabase**
 
-Run `supabase_schema.sql` in the Supabase SQL editor. This creates the `produkter` and `priser` tables, three convenience views (`siste_priser`, `prissammenligning`, and `prishistorikk` for historical price trends), and RLS policies for public read access.
+Run `supabase_schema.sql` in the Supabase SQL editor. This creates the `produkter` and `priser` tables, four convenience views (`siste_priser`, `prissammenligning`, `prishistorikk` for historical price trends, and `prishistorikk_daglig` for gap-free daily history), and RLS policies for public read access.
 
 **2. GitHub Secrets**
 
@@ -55,6 +55,10 @@ Each scraper follows the same pattern:
 3. Cache the resolved URL back to the database for future runs
 4. Fetch the price using HTTP requests first, Playwright as fallback
 5. Insert all results into the `priser` table with a timestamp
+
+### Scraper outages
+
+If the scraper doesn't run for a few nights, `prishistorikk` simply has no rows for those days. For charts and per-day calculations use `prishistorikk_daglig` instead: it has exactly one row per product, retailer and day, and fills days with no scrape from the last known price (`er_utfylt = true`, `dager_siden_scrape` = age of that price). Days where the scraper ran but found no price stay empty, filling stops 30 days after a retailer's last scrape of a product, and nothing is filled past the most recent scrape. No rows are written to `priser`, so the raw data stays exactly as scraped. Existing projects: run `supabase_migration_prishistorikk_daglig.sql`.
 
 ## Tests
 

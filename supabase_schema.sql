@@ -28,6 +28,7 @@ create index on priser (produkt_id);
 create index on priser (butikk);
 create index on priser (scraped_at desc);
 create index on priser (produkt_id, scraped_at desc);
+create index on priser (produkt_id, butikk, scraped_at desc);
 create index on produkter (kategori);
 create index on produkter (merke);
 
@@ -77,9 +78,54 @@ from produkter p
 join priser pr on pr.produkt_id = p.id
 order by p.id, pr.butikk, pr.scraped_at desc;
 
+-- One row per product × retailer × day; days the scraper didn't run carry the
+-- last known observation forward (er_utfylt = true). See
+-- supabase_migration_prishistorikk_daglig.sql for details.
+create view public.prishistorikk_daglig as
+with spenn as (
+  select produkt_id, butikk,
+         min(scraped_at)::date as forste_dato,
+         max(scraped_at)::date as siste_dato
+  from priser
+  group by produkt_id, butikk
+),
+siste_kjoring as (
+  select max(scraped_at)::date as dato from priser
+)
+select
+  p.id          as produkt_id,
+  p.varenummer,
+  p.merke,
+  p.produkt,
+  p.kategori,
+  s.butikk,
+  obs.pris,
+  obs.pa_lager,
+  obs.scraped_at,
+  d.dato,
+  obs.scraped_at::date <> d.dato         as er_utfylt,
+  d.dato - obs.scraped_at::date          as dager_siden_scrape
+from spenn s
+cross join siste_kjoring k
+cross join lateral (
+  select g::date as dato
+  from generate_series(s.forste_dato, least(k.dato, s.siste_dato + 30), interval '1 day') g
+) d
+cross join lateral (
+  select pr.pris, pr.pa_lager, pr.scraped_at
+  from priser pr
+  where pr.produkt_id = s.produkt_id
+    and pr.butikk     = s.butikk
+    and pr.scraped_at < d.dato + 1
+  order by pr.scraped_at desc
+  limit 1
+) obs
+join produkter p on p.id = s.produkt_id;
+
 alter table produkter enable row level security;
 alter table priser     enable row level security;
 create policy "Public read produkter" on produkter for select using (true);
 create policy "Public read priser"    on priser    for select using (true);
 
 grant select on public.prishistorikk to anon, authenticated;
+grant select on public.prishistorikk_daglig to anon, authenticated;
