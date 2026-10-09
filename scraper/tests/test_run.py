@@ -1,5 +1,6 @@
 """Tests for the pre-insert sanitizing and API-response parsing."""
 from datetime import datetime, timedelta, timezone
+import pytest
 
 from run import _sanitize
 from scrapers.vitusapotek import _extract_price, _extract_stock
@@ -44,3 +45,32 @@ def test_vitus_stock_mapping():
     assert _extract_stock({"statusCode": "sold-out-online"}) is False
     assert _extract_stock({"statusCode": "something-new"}) is None
     assert _extract_stock(None) is None
+
+
+def _stub_run(monkeypatch, refresh):
+    import run as run_mod
+    inserted = []
+    monkeypatch.setattr(run_mod, "SCRAPERS", {})
+    monkeypatch.setattr(run_mod, "get_active_products", lambda: [])
+    monkeypatch.setattr(run_mod, "bulk_insert_prices", inserted.append)
+    monkeypatch.setattr(run_mod, "refresh_prishistorikk_daglig", refresh)
+    return run_mod, inserted
+
+
+def test_run_refreshes_daily_history_after_insert(monkeypatch):
+    calls = []
+    run_mod, inserted = _stub_run(monkeypatch, lambda: calls.append(1))
+    with pytest.raises(SystemExit) as exc:
+        run_mod.run()
+    assert exc.value.code == 0
+    assert inserted and calls == [1]
+
+
+def test_run_survives_failed_refresh(monkeypatch):
+    def boom():
+        raise RuntimeError("timeout")
+    run_mod, inserted = _stub_run(monkeypatch, boom)
+    with pytest.raises(SystemExit) as exc:
+        run_mod.run()
+    assert exc.value.code == 0
+    assert inserted

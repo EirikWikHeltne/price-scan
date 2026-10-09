@@ -83,3 +83,80 @@ create policy "Public read produkter" on produkter for select using (true);
 create policy "Public read priser"    on priser    for select using (true);
 
 grant select on public.prishistorikk to anon, authenticated;
+
+-- One row per product × retailer × day; days the scraper didn't run carry the
+-- last known observation forward (er_utfylt = true). Refreshed by run.py after
+-- each scrape. See supabase_migration_prishistorikk_daglig.sql for details.
+create materialized view public.prishistorikk_daglig as
+with daglig as (
+  select distinct on (produkt_id, butikk, scraped_at::date)
+    produkt_id, butikk, scraped_at::date as dato, pris, pa_lager, scraped_at
+  from priser
+  order by produkt_id, butikk, scraped_at::date, scraped_at desc
+),
+spenn as (
+  select produkt_id, butikk, min(dato) as forste_dato, max(dato) as siste_dato
+  from daglig
+  group by produkt_id, butikk
+),
+kalender as (
+  select s.produkt_id, s.butikk, g::date as dato
+  from spenn s
+  cross join (select max(dato) as dato from daglig) k
+  cross join lateral generate_series(
+    s.forste_dato, least(k.dato, s.siste_dato + 30), interval '1 day'
+  ) g
+),
+gruppert as (
+  -- grp increments on every day with a real observation, so each gap day
+  -- shares a group with the observation before it
+  select c.produkt_id, c.butikk, c.dato, d.pris, d.pa_lager, d.scraped_at,
+         count(d.scraped_at) over (
+           partition by c.produkt_id, c.butikk order by c.dato
+         ) as grp
+  from kalender c
+  left join daglig d using (produkt_id, butikk, dato)
+),
+fylt as (
+  select produkt_id, butikk, dato,
+         first_value(pris)       over w as pris,
+         first_value(pa_lager)   over w as pa_lager,
+         first_value(scraped_at) over w as scraped_at
+  from gruppert
+  window w as (partition by produkt_id, butikk, grp order by dato)
+)
+select
+  p.id          as produkt_id,
+  p.varenummer,
+  p.merke,
+  p.produkt,
+  p.kategori,
+  f.butikk,
+  f.pris,
+  f.pa_lager,
+  f.scraped_at,
+  f.dato,
+  f.scraped_at::date <> f.dato   as er_utfylt,
+  f.dato - f.scraped_at::date    as dager_siden_scrape
+from fylt f
+join produkter p on p.id = f.produkt_id;
+
+create unique index on public.prishistorikk_daglig (produkt_id, butikk, dato);
+create index on public.prishistorikk_daglig (dato);
+create index on public.prishistorikk_daglig (varenummer, dato);
+
+-- Called by the scraper (service role) after each nightly insert
+create or replace function public.refresh_prishistorikk_daglig()
+returns void
+language sql
+security definer
+set search_path = public
+as $$
+  refresh materialized view public.prishistorikk_daglig;
+$$;
+
+revoke execute on function public.refresh_prishistorikk_daglig() from public, anon, authenticated;
+grant execute on function public.refresh_prishistorikk_daglig() to service_role;
+
+-- Read access so the view is queryable via Supabase client SDK
+grant select on public.prishistorikk_daglig to anon, authenticated;
