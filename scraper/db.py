@@ -64,6 +64,10 @@ def bulk_insert_prices(rows: list[dict]):
     if failed:
         raise RuntimeError(f"{failed}/{len(rows)} price rows could not be inserted")
 
+def refresh_prishistorikk_daglig():
+    """Rebuild the gap-filled daily history after new prices are inserted."""
+    get_client().rpc("refresh_prishistorikk_daglig").execute()
+
 def get_prishistorikk(
     produkt_id: int,
     dager: int | None = None,

@@ -58,7 +58,7 @@ Each scraper follows the same pattern:
 
 ### Scraper outages
 
-If the scraper doesn't run for a few nights, `prishistorikk` simply has no rows for those days. For charts and per-day calculations use `prishistorikk_daglig` instead: it has exactly one row per product, retailer and day, and fills days with no scrape from the last known price (`er_utfylt = true`, `dager_siden_scrape` = age of that price). Days where the scraper ran but found no price stay empty, filling stops 30 days after a retailer's last scrape of a product, and nothing is filled past the most recent scrape. No rows are written to `priser`, so the raw data stays exactly as scraped. Existing projects: run `supabase_migration_prishistorikk_daglig.sql`.
+If the scraper doesn't run for a few nights, `prishistorikk` simply has no rows for those days. For charts and per-day calculations use `prishistorikk_daglig` instead: it has exactly one row per product, retailer and day, and fills days with no scrape from the last known price (`er_utfylt = true`, `dager_siden_scrape` = age of that price). Days where the scraper ran but found no price stay empty, filling stops 30 days after a retailer's last scrape of a product, and nothing is filled past the most recent scrape. No rows are written to `priser`, so the raw data stays exactly as scraped. It is a materialized view that `run.py` refreshes at the end of every scrape, so while the scraper is down it holds data up to the last scrape and the next successful run fills the gap. Existing projects: run `supabase_migration_prishistorikk_daglig.sql`.
 
 ## Tests
 

@@ -5,7 +5,8 @@ import sys
 import traceback
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from db import get_active_products, save_resolved_url, bulk_insert_prices
+from db import (get_active_products, save_resolved_url, bulk_insert_prices,
+                refresh_prishistorikk_daglig)
 from scrapers import farmasiet, boots, vitusapotek, apotek1, oda, apotera
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -118,6 +119,13 @@ def run():
     except Exception as e:
         print(f"\n=== FAILED to insert prices: {e} ===")
         exit_code = 1
+    # Prices are already saved; a failed refresh only delays the daily view
+    # until the next run, so warn instead of failing the job.
+    try:
+        refresh_prishistorikk_daglig()
+        print("Refreshed prishistorikk_daglig")
+    except Exception as e:
+        print(f"WARNING: could not refresh prishistorikk_daglig: {e}")
     if stuck:
         # Non-daemon scraper threads would keep the interpreter alive at
         # normal exit; results are already saved, so exit hard.
