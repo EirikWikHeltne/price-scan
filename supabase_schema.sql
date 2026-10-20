@@ -56,7 +56,11 @@ join (
   select distinct on (produkt_id, butikk)
     produkt_id, butikk, pris, scraped_at
   from priser
-  order by produkt_id, butikk, scraped_at desc
+  -- Newest non-null price from the last 7 days, else the newest row: one
+  -- failed scrape must not blank a price that was known yesterday.
+  order by produkt_id, butikk,
+    (pris is not null and scraped_at > now() - interval '7 days') desc,
+    scraped_at desc
 ) pr on pr.produkt_id = p.id
 where p.aktiv = true
 group by p.id, p.varenummer, p.merke, p.produkt, p.kategori;

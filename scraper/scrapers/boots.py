@@ -25,9 +25,16 @@ def search_url(varenummer):
             pass
     return None
 
+class PageGone(Exception):
+    """The product page returned 404 — the cached URL is stale."""
+
+
 def fetch_price(url):
     try:
         r = requests.get(url, headers=HEADS, timeout=12)
+        if r.status_code == 404:
+            print(f"  [boots] HTTP 404 for {url}")
+            raise PageGone(url)
         if r.status_code != 200:
             # A 404/error page still contains prices (related products,
             # header promos) that the regex fallbacks below would pick up.
@@ -59,21 +66,47 @@ def fetch_price(url):
                     return float(m.group(1)), lager
 
         return None, None
+    except PageGone:
+        raise
     except Exception as e:
         print(f"  [boots] error: {e}")
         return None, None
 
+
+def _price_for(p):
+    """Fetch price via the cached URL, re-resolving it once if it is stale.
+
+    Without the re-search, a cached URL that starts returning 404 (product
+    page moved or renamed) would leave the product empty on every run.
+    """
+    cached = p.get("url_boots")
+    url = cached or search_url(p["varenummer"])
+    if not url:
+        return None, None, None
+    try:
+        return url, *fetch_price(url)
+    except PageGone:
+        if not cached:
+            return url, None, None
+    url = search_url(p["varenummer"])
+    if not url or url == cached:
+        return cached, None, None
+    try:
+        return url, *fetch_price(url)
+    except PageGone:
+        return url, None, None
+
+
 def run(products):
     results, resolved = [], {}
     for p in products:
-        url = p.get("url_boots") or search_url(p["varenummer"])
+        url, pris, lager = _price_for(p)
         if not url:
             print(f"  [boots] no URL: {p['varenummer']}")
             results.append({"produkt_id": p["id"], "butikk": BUTIKK, "pris": None, "pa_lager": None})
             continue
-        if not p.get("url_boots"):
+        if url != p.get("url_boots"):
             resolved[p["varenummer"]] = url
-        pris, lager = fetch_price(url)
         print(f"  [boots] {p['varenummer']}: {pris}")
         results.append({"produkt_id": p["id"], "butikk": BUTIKK, "pris": pris, "pa_lager": lager})
         time.sleep(0.1)
