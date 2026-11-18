@@ -56,6 +56,10 @@ Each scraper follows the same pattern:
 4. Fetch the price using HTTP requests first, Playwright as fallback
 5. Insert all results into the `priser` table with a timestamp
 
+A cached URL that starts returning 404/410 is resolved afresh on the same run (Apotek 1, Farmasiet, Boots), so a product whose page moved does not stay priceless.
+
+At the end of each run a coverage table lists prices found per retailer. The job fails if a scraper crashed or timed out (the other retailers' prices are still saved), and a retailer that returned no prices at all is flagged as a warning on the run page.
+
 ## Tests
 
 Offline unit tests cover the shared price/stock parsing, API-response parsing and the pre-insert sanity checks. They run on every pull request (`.github/workflows/tests.yml`) and locally with:

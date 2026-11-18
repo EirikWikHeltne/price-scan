@@ -1,10 +1,10 @@
 """Farmasiet.no — requests-first price extraction, Playwright fallback."""
-import re, time, requests
+import re, time
 from urllib.parse import quote
 from playwright.sync_api import sync_playwright
 from ._common import (
-    extract_stock, code_variants, safe_url,
-    extract_price_from_html, extract_price_from_page,
+    code_variants, safe_url, http_session,
+    fetch_price_http, fetch_price_browser,
 )
 
 BUTIKK       = "farmasiet"
@@ -27,8 +27,67 @@ def _valid_product_url(url):
     return bool(url and re.search(r",\d+$", url))
 
 
+def _search_url_browser(context, varenummer):
+    """Find a product URL via the on-site search. Returns URL or None."""
+    page = None
+    try:
+        page = context.new_page()
+        # Scan results per variant — a bare `goto` loop would only
+        # ever examine the last variant's search page.
+        for code in code_variants(varenummer):
+            page.goto(f"{BASE}/search?q={quote(code)}", timeout=12000)
+            try:
+                page.wait_for_selector("a[href*='/catalog/']", timeout=8000)
+            except Exception:
+                pass
+            for link in page.query_selector_all("a[href*='/catalog/']"):
+                href = link.get_attribute("href")
+                if _valid_product_url(href):
+                    url = safe_url(href, BASE, ALLOWED_HOST)
+                    if url:
+                        return url
+    except Exception as e:
+        print(f"  [farmasiet] search error {varenummer}: {e}")
+    finally:
+        if page:
+            try:
+                page.close()
+            except Exception:
+                pass
+    return None
+
+
+def _fetch_price(context, session, url, varenummer):
+    """Plain HTTP first (Farmasiet is server-rendered), Playwright fallback.
+
+    Returns (pris, lager, gone).
+    """
+    pris, lager = None, None
+    try:
+        pris, lager, gone = fetch_price_http(session, url)
+        if gone:
+            return None, None, True
+    except Exception as e:
+        print(f"  [farmasiet] requests error {varenummer}: {e}")
+    if pris is None:
+        try:
+            pris, browser_lager, gone = fetch_price_browser(
+                context, url,
+                "script[type='application/ld+json'], [data-testid*='price'], [class*='price']",
+                goto_timeout=12000,
+            )
+            if gone:
+                return None, None, True
+            if lager is None:
+                lager = browser_lager
+        except Exception as e:
+            print(f"  [farmasiet] browser error {varenummer}: {e}")
+    return pris, lager, False
+
+
 def run(products):
     results, resolved = [], {}
+    session = http_session(_REQ_HEADERS)
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
         context = browser.new_context(
@@ -44,85 +103,35 @@ def run(products):
         context.set_default_timeout(15000)
 
         for prod in products:
-            url = prod.get("url_farmasiet")
+            vn = prod["varenummer"]
+            cached = prod.get("url_farmasiet")
             # Discard bad category URLs (no comma+digits = not a product page)
-            if not _valid_product_url(url):
-                url = None
+            if not _valid_product_url(cached):
+                cached = None
 
-            # Resolve URL via browser search if not cached
+            url = cached
             if not url:
-                page = None
-                try:
-                    page = context.new_page()
-                    # Scan results per variant — a bare `goto` loop would only
-                    # ever examine the last variant's search page.
-                    for code in code_variants(prod["varenummer"]):
-                        page.goto(f"{BASE}/search?q={quote(code)}", timeout=12000)
-                        try:
-                            page.wait_for_selector("a[href*='/catalog/']", timeout=8000)
-                        except Exception:
-                            pass
-                        for link in page.query_selector_all("a[href*='/catalog/']"):
-                            href = link.get_attribute("href")
-                            if _valid_product_url(href):
-                                url = safe_url(href, BASE, ALLOWED_HOST)
-                                if url:
-                                    resolved[prod["varenummer"]] = url
-                                    break
-                        if url:
-                            break
-                    page.close()
-                except Exception as e:
-                    print(f"  [farmasiet] search error {prod['varenummer']}: {e}")
-                    if page:
-                        try:
-                            page.close()
-                        except Exception:
-                            pass
+                url = _search_url_browser(context, vn)
+                if url:
+                    resolved[vn] = url
 
             if not url:
-                print(f"  [farmasiet] no URL: {prod['varenummer']}")
+                print(f"  [farmasiet] no URL: {vn}")
                 results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": None, "pa_lager": None})
                 continue
 
-            # Fetch price: try plain HTTP first (Farmasiet is server-rendered)
-            pris = None
-            lager = None
-            try:
-                r = requests.get(url, headers=_REQ_HEADERS, timeout=10)
-                if r.status_code == 200:
-                    pris = extract_price_from_html(r.text)
-                    lager = extract_stock(r.text)
-            except Exception as e:
-                print(f"  [farmasiet] requests error {prod['varenummer']}: {e}")
+            pris, lager, gone = _fetch_price(context, session, url, vn)
 
-            # Playwright fallback if requests didn't get the price
-            if pris is None:
-                page = None
-                try:
-                    page = context.new_page()
-                    page.goto(url, timeout=12000)
-                    # Do NOT use networkidle — it times out and skips extraction
-                    try:
-                        page.wait_for_selector(
-                            "script[type='application/ld+json'], [data-testid*='price'], [class*='price']",
-                            timeout=5000
-                        )
-                    except Exception:
-                        pass  # Continue and attempt extraction anyway
-                    pris = extract_price_from_page(page)
-                    if lager is None:
-                        lager = extract_stock(page.content())
-                    page.close()
-                except Exception as e:
-                    print(f"  [farmasiet] browser error {prod['varenummer']}: {e}")
-                    if page:
-                        try:
-                            page.close()
-                        except Exception:
-                            pass
+            # A cached URL that now 404s means the product page moved:
+            # search for it afresh instead of returning no price forever.
+            if gone and cached:
+                print(f"  [farmasiet] cached URL is gone for {vn}, re-resolving")
+                fresh = _search_url_browser(context, vn)
+                if fresh and fresh != cached:
+                    resolved[vn] = fresh
+                    pris, lager, _ = _fetch_price(context, session, fresh, vn)
 
-            print(f"  [farmasiet] {prod['varenummer']}: {pris}")
+            print(f"  [farmasiet] {vn}: {pris}")
             results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": pris, "pa_lager": lager})
             time.sleep(0.1)
 

@@ -16,9 +16,7 @@ not exist in the current assortment.
 import time
 from datetime import datetime, timezone
 
-import requests
-
-from ._common import code_variants
+from ._common import code_variants, http_session
 
 BUTIKK = "vitusapotek"
 BASE   = "https://www.vitusapotek.no"
@@ -36,15 +34,13 @@ _HEADERS = {
 _BATCH = 40
 
 
-def _fetch_json(path, ids):
-    r = requests.get(
-        f"{BASE}{path}", params={"ids": ",".join(ids)}, headers=_HEADERS, timeout=25
-    )
+def _fetch_json(session, path, ids):
+    r = session.get(f"{BASE}{path}", params={"ids": ",".join(ids)}, timeout=25)
     r.raise_for_status()
     return r.json()
 
 
-def _batched(path, ids, collect):
+def _batched(session, path, ids, collect):
     """Fetch ids in batches, calling collect(payload) per batch.
 
     On a batch error, retry the ids one by one so a single bad id doesn't
@@ -53,12 +49,12 @@ def _batched(path, ids, collect):
     for i in range(0, len(ids), _BATCH):
         batch = ids[i:i + _BATCH]
         try:
-            collect(_fetch_json(path, batch))
+            collect(_fetch_json(session, path, batch))
         except Exception as e:
             print(f"  [vitusapotek] {path} batch error: {e}")
             for pid in batch:
                 try:
-                    collect(_fetch_json(path, [pid]))
+                    collect(_fetch_json(session, path, [pid]))
                 except Exception as e2:
                     print(f"  [vitusapotek] {path} error {pid}: {e2}")
         time.sleep(0.2)
@@ -124,11 +120,12 @@ def run(products):
             if isinstance(item, dict):
                 items_by_id.setdefault(str(item.get("id", "")).strip(), item)
 
-    _batched("/api/products", wanted, _collect_items)
+    session = http_session(_HEADERS)
+    _batched(session, "/api/products", wanted, _collect_items)
 
     stock_by_id = {}
     _batched(
-        "/api/products/stock", wanted,
+        session, "/api/products/stock", wanted,
         lambda payload: stock_by_id.update(payload if isinstance(payload, dict) else {}),
     )
 

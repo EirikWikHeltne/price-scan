@@ -6,8 +6,8 @@ customer-login redirects, so HTML scraping is a dead end here. Magento's
 /graphql endpoint returns price, stock and the canonical url_key for an
 exact SKU match — and Apotera's SKUs are the pharmacy varenummer.
 """
-import time, requests
-from ._common import code_variants
+import time
+from ._common import code_variants, http_session
 
 BUTIKK  = "apotera"
 BASE    = "https://www.apotera.no"
@@ -39,12 +39,11 @@ query ($skus: [String!], $pageSize: Int!) {
 """
 
 
-def _fetch_items(skus):
+def _fetch_items(session, skus):
     """Fetch product items for a list of SKUs. Raises on transport/API errors."""
-    r = requests.post(
+    r = session.post(
         GRAPHQL,
         json={"query": _QUERY, "variables": {"skus": skus, "pageSize": len(skus)}},
-        headers=_HEADERS,
         timeout=20,
     )
     r.raise_for_status()
@@ -56,6 +55,7 @@ def _fetch_items(skus):
 
 def run(products):
     results, resolved = [], {}
+    session = http_session(_HEADERS)
 
     # Query every SKU variant (with and without leading zeros) and key the
     # results by SKU. Each product then resolves its own variants — the DB
@@ -73,14 +73,14 @@ def run(products):
     for i in range(0, len(wanted), _BATCH):
         batch = wanted[i:i + _BATCH]
         try:
-            items = _fetch_items(batch)
+            items = _fetch_items(session, batch)
         except Exception as e:
             print(f"  [apotera] GraphQL batch error: {e}")
             # Retry one by one so a single bad SKU doesn't lose the batch.
             items = []
             for sku in batch:
                 try:
-                    items.extend(_fetch_items([sku]))
+                    items.extend(_fetch_items(session, [sku]))
                 except Exception as e2:
                     print(f"  [apotera] GraphQL error {sku}: {e2}")
         for item in items:
