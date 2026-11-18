@@ -33,17 +33,48 @@ SCRAPE_TIMEOUT = 2.5 * 60 * 60  # seconds
 
 
 def _run_scraper(name, module, products):
-    """Run a single scraper; returns (name, rows, resolved) — empty on crash."""
+    """Run a single scraper; returns (name, rows, resolved, crashed)."""
     print(f"\n--- {name} ---")
     try:
         rows, resolved = module.run(products)
         ok = sum(1 for r in rows if r["pris"] is not None)
         print(f"  {name}: {ok}/{len(rows)} prices found")
-        return name, rows, resolved
+        return name, rows, resolved, False
     except Exception as e:
         print(f"  {name} CRASH: {e}")
         traceback.print_exc()
-        return name, [], {}
+        return name, [], {}, True
+
+
+def _annotate(level, message):
+    """Print a message; on GitHub Actions also surface it on the run page."""
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        print(f"::{level}::{message}")
+    else:
+        print(f"{level.upper()}: {message}")
+
+
+def _report(counts, crashed, stuck):
+    """Print per-retailer coverage and flag retailers that produced nothing.
+
+    Scrapers swallow per-product errors by design, so a retailer that starts
+    blocking us or changes its markup shows up only as a run of missing
+    prices. Without this the job stays green while a retailer silently
+    drops out of the data.
+    """
+    print("\n=== Coverage ===")
+    for name in SCRAPERS:
+        if name in stuck:
+            print(f"  {name:<12} timed out")
+            _annotate("error", f"{name}: scraper timed out, no prices saved")
+        elif name in crashed:
+            print(f"  {name:<12} crashed")
+            _annotate("error", f"{name}: scraper crashed, no prices saved")
+        else:
+            ok, total = counts.get(name, (0, 0))
+            print(f"  {name:<12} {ok}/{total}")
+            if total and not ok:
+                _annotate("warning", f"{name}: 0/{total} prices found")
 
 
 # priser.pris is numeric(8,2): anything >= 10^6 overflows the column and fails
@@ -91,10 +122,12 @@ def run():
         ): name
         for name, module in SCRAPERS.items()
     }
-    stuck = []
+    stuck, crashed, counts = [], [], {}
     try:
         for future in as_completed(futures, timeout=SCRAPE_TIMEOUT):
-            name, rows, resolved = future.result()
+            name, rows, resolved, did_crash = future.result()
+            if did_crash:
+                crashed.append(name)
             # Collect rows first: a failed URL cache write must never cost
             # the prices already scraped.
             all_rows.extend(rows)
@@ -112,11 +145,21 @@ def run():
     pool.shutdown(wait=False, cancel_futures=True)
 
     exit_code = 0
+    all_rows = _sanitize(all_rows)
+    # Counted after sanitizing, so discarded prices don't count as found.
+    for r in all_rows:
+        ok, total = counts.get(r["butikk"], (0, 0))
+        counts[r["butikk"]] = (ok + (r["pris"] is not None), total + 1)
     try:
-        bulk_insert_prices(_sanitize(all_rows))
+        bulk_insert_prices(all_rows)
         print(f"\n=== Done — {len(all_rows)} rows inserted ===")
     except Exception as e:
         print(f"\n=== FAILED to insert prices: {e} ===")
+        exit_code = 1
+    _report(counts, crashed, stuck)
+    if crashed or stuck:
+        # The other retailers' prices are saved, but a whole retailer is
+        # missing from today's data — fail the job so it gets noticed.
         exit_code = 1
     if stuck:
         # Non-daemon scraper threads would keep the interpreter alive at

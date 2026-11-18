@@ -1,10 +1,10 @@
 """Apotek1.no — sitemap URL discovery, requests price extraction, Playwright fallback."""
-import re, time, requests
+import re, time
 from urllib.parse import quote, urlparse
 from playwright.sync_api import sync_playwright
 from ._common import (
-    extract_stock, code_variants, safe_url,
-    extract_price_from_html, extract_price_from_page,
+    code_variants, safe_url, http_session,
+    fetch_price_http, fetch_price_browser,
 )
 
 BUTIKK       = "apotek1"
@@ -39,11 +39,11 @@ def _parse_sitemap_urls(text, index):
             index[m.group(1)] = url
 
 
-def _fetch_and_index(url, index, depth=0):
+def _fetch_and_index(session, url, index, depth=0):
     if depth > 2:
         return
     try:
-        r = requests.get(url, headers=_REQ_HEADERS, timeout=15)
+        r = session.get(url, timeout=15)
         r.raise_for_status()
         text = r.text
         if '<sitemapindex' in text or ('<sitemap>' in text and '<loc>' in text):
@@ -55,20 +55,105 @@ def _fetch_and_index(url, index, depth=0):
                     continue
                 # Prefer product sitemaps; at depth 0 fetch all
                 if depth == 0 or 'product' in sub.lower():
-                    _fetch_and_index(sub, index, depth + 1)
+                    _fetch_and_index(session, sub, index, depth + 1)
         else:
             _parse_sitemap_urls(text, index)
     except Exception as e:
         print(f"  [apotek1] sitemap error {url}: {e}")
 
 
-def _build_sitemap_index():
+def _build_sitemap_index(session):
     """Download Apotek1 sitemaps and return varenummer→URL dict."""
     index = {}
     print("  [apotek1] building URL index from sitemap...")
-    _fetch_and_index(f"{BASE}/sitemap.xml", index)
+    _fetch_and_index(session, f"{BASE}/sitemap.xml", index)
     print(f"  [apotek1] sitemap: {len(index)} product URLs indexed")
     return index
+
+
+# ---------------------------------------------------------------------------
+# URL resolution and price fetching
+# ---------------------------------------------------------------------------
+
+def _search_url_browser(context, varenummer, variants):
+    """Find a product URL via the on-site search. Returns URL or None."""
+    page = None
+    try:
+        page = context.new_page()
+        href, fallback_href = None, None
+        for code in variants:
+            page.goto(f"{BASE}/search?q={quote(code)}", timeout=15000)
+            try:
+                page.wait_for_selector(
+                    f"a[href$='-{code}p'], a[href*='/produkter/']", timeout=5000
+                )
+            except Exception:
+                pass
+            # The product URL may use any variant of the code,
+            # regardless of which one the search was queried with.
+            for v in variants:
+                link = page.query_selector(f"a[href$='-{v}p']")
+                if link:
+                    href = link.get_attribute("href")
+                    break
+            if href:
+                break
+            if not fallback_href:
+                link = page.query_selector("a[href*='/produkter/']")
+                if link:
+                    fallback_href = link.get_attribute("href")
+        href = href or fallback_href
+        if not href:
+            print(f"  [apotek1] no search result for {varenummer}")
+            return None
+        return safe_url(href, BASE, ALLOWED_HOST)
+    except Exception as e:
+        print(f"  [apotek1] search error {varenummer}: {e}")
+        return None
+    finally:
+        if page:
+            try:
+                page.close()
+            except Exception:
+                pass
+
+
+def _resolve_url(context, sitemap_index, varenummer):
+    """Sitemap index → browser search.
+
+    Sitemap keys come from the URL slug, which may keep or drop leading
+    zeros ("051946" vs "51946"), so try every variant.
+    """
+    variants = code_variants(varenummer)
+    for code in variants:
+        url = sitemap_index.get(code)
+        if url:
+            return url
+    return _search_url_browser(context, varenummer, variants)
+
+
+def _fetch_price(context, session, url, varenummer):
+    """Plain HTTP first (fast), Playwright fallback. Returns (pris, lager, gone)."""
+    pris, lager = None, None
+    try:
+        pris, lager, gone = fetch_price_http(session, url)
+        if gone:
+            return None, None, True
+    except Exception as e:
+        print(f"  [apotek1] requests error {varenummer}: {e}")
+    if pris is None:
+        try:
+            pris, browser_lager, gone = fetch_price_browser(
+                context, url,
+                "script[type='application/ld+json'], [data-testid*='price'], [class*='Price']",
+            )
+            if gone:
+                return None, None, True
+            if lager is None:
+                lager = browser_lager
+        except Exception as e:
+            print(f"  [apotek1] browser error {varenummer}: {e}")
+    return pris, lager, False
 
 
 # ---------------------------------------------------------------------------
@@ -77,9 +162,10 @@ def _build_sitemap_index():
 
 def run(products):
     results, resolved = [], {}
+    session = http_session(_REQ_HEADERS)
 
     # Step 1: build sitemap URL index (HTTP, no browser, bypasses bot protection)
-    sitemap_index = _build_sitemap_index()
+    sitemap_index = _build_sitemap_index(session)
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -107,104 +193,31 @@ def run(products):
         context.set_default_timeout(15000)
 
         for prod in products:
-            url = prod.get("url_apotek1")
-
-            # Resolve URL: DB cache → sitemap index → browser search.
-            # Sitemap keys come from the URL slug, which may keep or drop
-            # leading zeros ("051946" vs "51946"), so try every variant.
-            variants = code_variants(prod["varenummer"])
+            vn = prod["varenummer"]
+            cached = prod.get("url_apotek1")
+            url = cached
             if not url:
-                for code in variants:
-                    url = sitemap_index.get(code)
-                    if url:
-                        resolved[prod["varenummer"]] = url
-                        break
+                url = _resolve_url(context, sitemap_index, vn)
+                if url:
+                    resolved[vn] = url
 
             if not url:
-                page = None
-                try:
-                    page = context.new_page()
-                    href, fallback_href = None, None
-                    for code in variants:
-                        page.goto(f"{BASE}/search?q={quote(code)}", timeout=15000)
-                        try:
-                            page.wait_for_selector(
-                                f"a[href$='-{code}p'], a[href*='/produkter/']", timeout=5000
-                            )
-                        except Exception:
-                            pass
-                        # The product URL may use any variant of the code,
-                        # regardless of which one the search was queried with.
-                        for v in variants:
-                            link = page.query_selector(f"a[href$='-{v}p']")
-                            if link:
-                                href = link.get_attribute("href")
-                                break
-                        if href:
-                            break
-                        if not fallback_href:
-                            link = page.query_selector("a[href*='/produkter/']")
-                            if link:
-                                fallback_href = link.get_attribute("href")
-                    href = href or fallback_href
-                    if href:
-                        url = safe_url(href, BASE, ALLOWED_HOST)
-                        if url:
-                            resolved[prod["varenummer"]] = url
-                    else:
-                        print(f"  [apotek1] no search result for {prod['varenummer']}")
-                    page.close()
-                except Exception as e:
-                    print(f"  [apotek1] search error {prod['varenummer']}: {e}")
-                    if page:
-                        try:
-                            page.close()
-                        except Exception:
-                            pass
-
-            if not url:
-                print(f"  [apotek1] no URL: {prod['varenummer']}")
+                print(f"  [apotek1] no URL: {vn}")
                 results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": None, "pa_lager": None})
                 continue
 
-            # Fetch price: try plain HTTP first (fast), fall back to Playwright
-            pris = None
-            lager = None
-            try:
-                r = requests.get(url, headers=_REQ_HEADERS, timeout=10)
-                if r.status_code == 200:
-                    pris = extract_price_from_html(r.text)
-                    lager = extract_stock(r.text)
-            except Exception as e:
-                print(f"  [apotek1] requests error {prod['varenummer']}: {e}")
+            pris, lager, gone = _fetch_price(context, session, url, vn)
 
-            # Playwright fallback if requests didn't get the price
-            if pris is None:
-                page = None
-                try:
-                    page = context.new_page()
-                    page.goto(url, timeout=15000)
-                    # Do NOT use networkidle — it times out on Apotek1
-                    try:
-                        page.wait_for_selector(
-                            "script[type='application/ld+json'], [data-testid*='price'], [class*='Price']",
-                            timeout=5000
-                        )
-                    except Exception:
-                        pass  # Continue and attempt extraction anyway
-                    pris = extract_price_from_page(page)
-                    if lager is None:
-                        lager = extract_stock(page.content())
-                    page.close()
-                except Exception as e:
-                    print(f"  [apotek1] browser error {prod['varenummer']}: {e}")
-                    if page:
-                        try:
-                            page.close()
-                        except Exception:
-                            pass
+            # A cached URL that now 404s means the product page moved:
+            # resolve it afresh instead of returning no price forever.
+            if gone and cached:
+                print(f"  [apotek1] cached URL is gone for {vn}, re-resolving")
+                fresh = _resolve_url(context, sitemap_index, vn)
+                if fresh and fresh != cached:
+                    resolved[vn] = fresh
+                    pris, lager, _ = _fetch_price(context, session, fresh, vn)
 
-            print(f"  [apotek1] {prod['varenummer']}: {pris}")
+            print(f"  [apotek1] {vn}: {pris}")
             results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": pris, "pa_lager": lager})
             time.sleep(0.1)
 

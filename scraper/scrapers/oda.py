@@ -3,7 +3,7 @@ import re, time, json, requests
 from urllib.parse import quote
 from playwright.sync_api import sync_playwright
 from playwright_stealth import Stealth
-from ._common import code_variants, safe_url
+from ._common import code_variants, parse_price_text, safe_url
 
 BUTIKK       = "oda"
 BASE         = "https://oda.com"
@@ -233,13 +233,11 @@ def _fetch_price_browser(context, url: str) -> tuple[float | None, bool | None]:
                 ]:
                     el = page.query_selector(sel)
                     if el:
-                        raw = el.inner_text().replace("kr", "").replace("\xa0", "").replace(",", ".").strip()
-                        m = re.search(r"(\d+\.?\d*)", raw)
-                        if m:
-                            val = float(m.group(1))
-                            if val > 0:
-                                pris = val
-                                break
+                        # Shared parser: handles "1 299,00" (plain-space
+                        # thousands separator), which read as 1.0 here.
+                        pris = parse_price_text(el.inner_text())
+                        if pris:
+                            break
 
             # Stock from page content
             if lager is None:
