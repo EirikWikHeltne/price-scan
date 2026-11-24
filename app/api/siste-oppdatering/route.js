@@ -11,29 +11,17 @@ export async function GET() {
     return Response.json({ error: 'Server misconfiguration' }, { status: 500 })
   }
 
-  // Get the most recent scan date from prishistorikk
-  let dato = null
-
+  // Nyeste skanning leses rett fra priser-tabellen, der scraped_at er
+  // indeksert. Visningen prishistorikk kan ikke bruke indeksen når den
+  // sorteres på dato, og måtte sortere hele prishistorikken for ett svar.
   const { data, error } = await supabase
-    .from('prishistorikk')
-    .select('dato')
-    .order('dato', { ascending: false })
+    .from('priser')
+    .select('scraped_at')
+    .order('scraped_at', { ascending: false })
     .limit(1)
 
-  if (!error && data?.[0]?.dato) {
-    dato = data[0].dato
-  } else {
-    // Fall back to sist_oppdatert from prissammenligning
-    const { data: fallback, error: fbErr } = await supabase
-      .from('prissammenligning')
-      .select('sist_oppdatert')
-      .order('sist_oppdatert', { ascending: false })
-      .limit(1)
+  if (error) console.error('Supabase error:', error)
 
-    if (!fbErr && fallback?.[0]?.sist_oppdatert) {
-      dato = fallback[0].sist_oppdatert.slice(0, 10)
-    }
-  }
-
+  const dato = data?.[0]?.scraped_at?.slice(0, 10) ?? null
   return Response.json({ dato }, { headers: CACHE_HEADERS })
 }
