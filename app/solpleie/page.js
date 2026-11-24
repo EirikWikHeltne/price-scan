@@ -350,7 +350,7 @@ export default function SolpleiePage() {
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" horizontal={false} />
                 <XAxis
                   type="number"
-                  tick={{ fontSize: 11, fontFamily: 'Inter' }}
+                  tick={{ fontSize: 11, fontFamily: 'inherit' }}
                   axisLine={false}
                   tickLine={false}
                   tickFormatter={v => `${v} kr`}
@@ -359,7 +359,7 @@ export default function SolpleiePage() {
                   dataKey="name"
                   type="category"
                   width={190}
-                  tick={{ fontSize: 10, fontFamily: 'Inter' }}
+                  tick={{ fontSize: 10, fontFamily: 'inherit' }}
                   axisLine={false}
                   tickLine={false}
                 />
@@ -424,7 +424,7 @@ export default function SolpleiePage() {
                 return (
                   <tr key={row.id}>
                     <td>
-                      <span style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                      <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
                         {row.varenummer || '—'}
                       </span>
                     </td>

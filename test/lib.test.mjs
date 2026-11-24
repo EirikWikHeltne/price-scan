@@ -7,6 +7,7 @@ import { parseDager } from '../lib/parseDager.js'
 import { pivotIfNeeded, normalizeRetailerKey } from '../lib/pivot.js'
 import { deriveRetailers } from '../lib/retailers.js'
 import { fetchAllRows } from '../lib/fetchAllRows.js'
+import { aggregateWeekly } from '../lib/weekly.js'
 
 test('matchesSearch matches product, brand and item number', () => {
   const row = { produkt: 'Paracet 500 mg', merke: 'Karo', varenummer: 123456 }
@@ -73,15 +74,81 @@ test('deriveRetailers finds price columns and applies known styles', () => {
   assert.deepEqual(deriveRetailers([]), [])
 })
 
-test('fetchAllRows pages until a short page and surfaces errors', async () => {
-  const all = Array.from({ length: 2500 }, (_, i) => i)
+// Etterligner en Supabase-spørring: .range() gir én side, med totalt antall
+// når `withCount` er satt (som select(..., { count: 'exact' })).
+function fakeTable(all, { withCount = true, failAt = null } = {}) {
   const calls = []
-  const query = { range: async (from, to) => { calls.push([from, to]); return { data: all.slice(from, to + 1), error: null } } }
-  const { data, error } = await fetchAllRows(query)
-  assert.equal(error, null)
-  assert.equal(data.length, 2500)
-  assert.deepEqual(calls, [[0, 999], [1000, 1999], [2000, 2999]])
+  let active = 0
+  let peak = 0
+  const buildQuery = () => ({
+    range: async (from, to) => {
+      calls.push([from, to])
+      peak = Math.max(peak, ++active)
+      await new Promise(resolve => setTimeout(resolve, 2))
+      active--
+      if (from === failAt) return { data: null, error: { message: 'boom' } }
+      return { data: all.slice(from, to + 1), error: null, count: withCount ? all.length : null }
+    },
+  })
+  return { buildQuery, calls, peak: () => peak }
+}
 
-  const failing = { range: async () => ({ data: null, error: { message: 'boom' } }) }
-  assert.deepEqual(await fetchAllRows(failing), { data: null, error: { message: 'boom' } })
+test('fetchAllRows fetches the remaining pages in parallel and keeps row order', async () => {
+  const all = Array.from({ length: 12500 }, (_, i) => i)
+  const table = fakeTable(all)
+  const { data, error } = await fetchAllRows(table.buildQuery, { concurrency: 4 })
+  assert.equal(error, null)
+  assert.deepEqual(data, all)
+  assert.equal(table.calls.length, 13)
+  assert.equal(table.peak(), 4)
+})
+
+test('fetchAllRows makes a single request when everything fits on one page', async () => {
+  const table = fakeTable([1, 2, 3])
+  assert.deepEqual(await fetchAllRows(table.buildQuery), { data: [1, 2, 3], error: null })
+  assert.deepEqual(table.calls, [[0, 999]])
+  // Nøyaktig én full side: antallet viser at det ikke finnes flere
+  const exact = fakeTable(Array.from({ length: 1000 }, (_, i) => i))
+  assert.equal((await fetchAllRows(exact.buildQuery)).data.length, 1000)
+  assert.equal(exact.calls.length, 1)
+})
+
+test('fetchAllRows pages one by one when the query has no count', async () => {
+  const all = Array.from({ length: 2500 }, (_, i) => i)
+  const table = fakeTable(all, { withCount: false })
+  const { data, error } = await fetchAllRows(table.buildQuery)
+  assert.equal(error, null)
+  assert.deepEqual(data, all)
+  assert.deepEqual(table.calls, [[0, 999], [1000, 1999], [2000, 2999]])
+  assert.equal(table.peak(), 1)
+})
+
+test('fetchAllRows surfaces errors from any page', async () => {
+  const all = Array.from({ length: 5000 }, (_, i) => i)
+  assert.deepEqual(await fetchAllRows(fakeTable(all, { failAt: 0 }).buildQuery), { data: null, error: { message: 'boom' } })
+  assert.deepEqual(await fetchAllRows(fakeTable(all, { failAt: 3000 }).buildQuery), { data: null, error: { message: 'boom' } })
+})
+
+test('pivotIfNeeded ignores zero prices (retailer does not stock the product)', () => {
+  const rows = [
+    { dato: '2026-01-01', varenummer: '1', kilde: 'Boots', pris: 0 },
+    { dato: '2026-01-01', varenummer: '1', kilde: 'Apotek 1', pris: 99 },
+  ]
+  const [row] = pivotIfNeeded(rows)
+  assert.equal(row.apotek1, 99)
+  assert.equal('boots' in row, false)
+})
+
+test('aggregateWeekly averages each retailer per product and ISO week', () => {
+  const rows = [
+    { dato: '2026-01-05', varenummer: '1', produkt: 'A', kategori: 'K', merke: 'M', boots: 10, apotek1: 20 },
+    { dato: '2026-01-07', varenummer: '1', produkt: 'A', kategori: 'K', merke: 'M', boots: 13 },
+    { dato: '2026-01-12', varenummer: '1', produkt: 'A', kategori: 'K', merke: 'M', boots: 30 },
+    { dato: '2026-01-06', varenummer: '2', produkt: 'B', apotek1: 5 },
+  ]
+  assert.deepEqual(aggregateWeekly(rows), [
+    { dato: '2026-01-05', varenummer: '1', produkt: 'A', kategori: 'K', merke: 'M', boots: 11.5, apotek1: 20 },
+    { dato: '2026-01-05', varenummer: '2', produkt: 'B', kategori: undefined, merke: undefined, apotek1: 5 },
+    { dato: '2026-01-12', varenummer: '1', produkt: 'A', kategori: 'K', merke: 'M', boots: 30 },
+  ])
 })

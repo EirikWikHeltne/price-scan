@@ -18,6 +18,13 @@ made-up "12:00" in the header's updated label, non-deterministic pagination on
 `prissammenligning`, and the SVG-only Open Graph image. ESLint and unit tests
 for `lib/` were added.
 
+The speed round fixed: history endpoints paging through hundreds of Supabase
+requests one at a time (now parallel, with only the needed columns and a
+deterministic sort), 0 kr "not stocked" rows being counted as prices in
+averages and charts, Ukesnitt downloading every daily row instead of weekly
+averages, and Next.js caching Supabase responses indefinitely in its data cache
+(stale prices).
+
 ## Outstanding
 
 ### Performance / Architecture
@@ -29,11 +36,19 @@ for `lib/` were added.
   Next.js Suspense loading UI.
 
 ### Data
-- **History pagination has no unique sort key.** `prishistorikk` is paged by
-  `dato` only (`lib/fetchAllRows.js`), so rows sharing a date can in theory be
-  duplicated or skipped across page boundaries. The `prissammenligning` queries
-  now end with `.order('id')`; do the same for `prishistorikk` once its primary
-  key column is confirmed.
+- **History is aggregated in Node, not in the database.** `lib/historyRows.js`
+  pages through `prishistorikk` (one row per retailer per product per day) in
+  parallel and pivots/averages it in the API route. A Postgres view or RPC that
+  returns the weekly / per-category averages directly would cut a cold request
+  from seconds to milliseconds.
+- **Functions run in `iad1` (US East).** If the Supabase project is in Europe,
+  pin the functions next to it with `"regions"` in `vercel.json`.
+
+### Fonts
+- **Euclid Circular A is not bundled.** It is licensed, so the files are not in
+  the repo; it only renders where it is installed locally, and everyone else
+  gets Figtree. Add the `.woff2` files and load them with `next/font/local` in
+  `app/layout.js` to serve it to all visitors.
 
 ### Developer Experience
 - **Tests only cover `lib/`** (`npm test`). No component or API route tests.

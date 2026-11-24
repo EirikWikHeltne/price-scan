@@ -192,7 +192,7 @@ export default function ProdukterPage() {
               {filtered.map(row => (
                 <tr key={row.id}>
                   <td>
-                    <span style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                    <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
                       {row.varenummer || '—'}
                     </span>
                   </td>

@@ -31,7 +31,7 @@ function GrafTooltip({ active, payload, label }) {
 function renderGrafPieLabel({ name, value, cx, x, y }) {
   const anchor = x > cx ? 'start' : 'end'
   return (
-    <text x={x} y={y} textAnchor={anchor} dominantBaseline="central" fontSize={11} fontFamily="Inter" fill="var(--text)">
+    <text x={x} y={y} textAnchor={anchor} dominantBaseline="central" fontSize={11} fontFamily="inherit" fill="var(--text)">
       {name} ({value})
     </text>
   )
@@ -207,12 +207,12 @@ export default function GraferPage() {
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
                 <XAxis
                   dataKey="name"
-                  tick={{ fontSize: 11, fontFamily: 'Inter' }}
+                  tick={{ fontSize: 11, fontFamily: 'inherit' }}
                   axisLine={false}
                   tickLine={false}
                 />
                 <YAxis
-                  tick={{ fontSize: 11, fontFamily: 'Inter' }}
+                  tick={{ fontSize: 11, fontFamily: 'inherit' }}
                   axisLine={false}
                   tickLine={false}
                   width={50}
@@ -261,10 +261,10 @@ export default function GraferPage() {
               <ResponsiveContainer width="100%" height={300}>
                 <BarChart data={coverageData} margin={{ top: 10, right: 10, left: 0, bottom: 5 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
-                  <XAxis dataKey="kategori" tick={{ fontSize: 10, fontFamily: 'Inter' }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fontSize: 11, fontFamily: 'Inter' }} axisLine={false} tickLine={false} width={40} domain={[0, 100]} tickFormatter={v => `${v}%`} />
-                  <Tooltip formatter={(v) => `${v}%`} labelStyle={{ fontFamily: 'Inter' }} />
-                  <Legend wrapperStyle={{ fontSize: '0.7rem', fontFamily: 'Inter' }} />
+                  <XAxis dataKey="kategori" tick={{ fontSize: 10, fontFamily: 'inherit' }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fontSize: 11, fontFamily: 'inherit' }} axisLine={false} tickLine={false} width={40} domain={[0, 100]} tickFormatter={v => `${v}%`} />
+                  <Tooltip formatter={(v) => `${v}%`} labelStyle={{ fontFamily: 'inherit' }} />
+                  <Legend wrapperStyle={{ fontSize: '0.7rem', fontFamily: 'inherit' }} />
                   {retailers.map(r => (
                     <Bar {...CHART_ANIM} key={r.key} dataKey={`${r.key}Pct`} name={r.label} fill={r.color} radius={[2, 2, 0, 0]} opacity={0.8} />
                   ))}
@@ -281,13 +281,13 @@ export default function GraferPage() {
               <ResponsiveContainer width="100%" height={300}>
                 <ScatterChart margin={{ top: 10, right: 10, left: 0, bottom: 5 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                  <XAxis type="number" dataKey="min" name="Laveste" tick={{ fontSize: 10, fontFamily: 'Inter' }} axisLine={false} tickLine={false} tickFormatter={v => `${v} kr`} />
-                  <YAxis type="number" dataKey="max" name="Høyeste" tick={{ fontSize: 10, fontFamily: 'Inter' }} axisLine={false} tickLine={false} width={55} tickFormatter={v => `${v} kr`} />
+                  <XAxis type="number" dataKey="min" name="Laveste" tick={{ fontSize: 10, fontFamily: 'inherit' }} axisLine={false} tickLine={false} tickFormatter={v => `${v} kr`} />
+                  <YAxis type="number" dataKey="max" name="Høyeste" tick={{ fontSize: 10, fontFamily: 'inherit' }} axisLine={false} tickLine={false} width={55} tickFormatter={v => `${v} kr`} />
                   <ZAxis type="number" dataKey="spread" range={[30, 200]} name="Spread" />
                   <Tooltip
                     formatter={(v, name) => [`${fmt(v)} kr`, name]}
                     labelFormatter={(_, payload) => payload?.[0]?.payload?.name || ''}
-                    contentStyle={{ fontFamily: 'Inter', fontSize: '0.75rem' }}
+                    contentStyle={{ fontFamily: 'inherit', fontSize: '0.75rem' }}
                   />
                   <Scatter {...CHART_ANIM} data={scatterData} fill="var(--accent)" fillOpacity={0.4} stroke="var(--accent)" strokeWidth={1} />
                 </ScatterChart>
@@ -308,7 +308,7 @@ export default function GraferPage() {
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" horizontal={false} />
                   <XAxis
                     type="number"
-                    tick={{ fontSize: 11, fontFamily: 'Inter' }}
+                    tick={{ fontSize: 11, fontFamily: 'inherit' }}
                     axisLine={false}
                     tickLine={false}
                   />
@@ -316,11 +316,11 @@ export default function GraferPage() {
                     dataKey="name"
                     type="category"
                     width={140}
-                    tick={{ fontSize: 10, fontFamily: 'Inter' }}
+                    tick={{ fontSize: 10, fontFamily: 'inherit' }}
                     axisLine={false}
                     tickLine={false}
                   />
-                  <Tooltip formatter={(v) => `${fmt(v)} kr`} labelStyle={{ fontFamily: 'Inter' }} />
+                  <Tooltip formatter={(v) => `${fmt(v)} kr`} labelStyle={{ fontFamily: 'inherit' }} />
                   <Bar {...CHART_ANIM} dataKey="spread" name="Prisforskjell" fill="var(--red)" radius={[0, 4, 4, 0]} />
                 </BarChart>
               </ResponsiveContainer>

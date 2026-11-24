@@ -54,7 +54,7 @@ export default function UkesnittPage() {
     setError(null)
     setTableNotFound(false)
     try {
-      const json = await fetchJson(`/api/historikk?dager=${dager}`)
+      const json = await fetchJson(`/api/historikk?dager=${dager}&gruppering=uke`)
       if (isStale()) return
       if (json?.code === 'TABLE_NOT_FOUND') {
         setTableNotFound(true)

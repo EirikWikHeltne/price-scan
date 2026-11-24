@@ -1,7 +1,8 @@
 import { getSupabase } from '@/lib/supabaseServer'
-import { CACHE_HEADERS } from '@/lib/cacheHeaders'
+import { cacheHeaders } from '@/lib/cacheHeaders'
 import { fetchAllRows } from '@/lib/fetchAllRows'
-import { pivotIfNeeded, NON_PRICE_COLS } from '@/lib/pivot'
+import { fetchHistoryRows, sinceDate } from '@/lib/historyRows'
+import { NON_PRICE_COLS } from '@/lib/pivot'
 import { parseDager } from '@/lib/parseDager'
 
 export const dynamic = 'force-dynamic'
@@ -60,7 +61,7 @@ function aggregateByCategoryAndDate(rows) {
 }
 
 async function loadCurrentSnapshot(supabase) {
-  const { data, error } = await fetchAllRows(supabase.from('prissammenligning').select('*').order('id'))
+  const { data, error } = await fetchAllRows(() => supabase.from('prissammenligning').select('*', { count: 'exact' }).order('id'))
   if (error || !data?.length) return []
   return data.map(row => ({
     ...row,
@@ -72,7 +73,7 @@ async function enrichCategories(supabase, rows) {
   const missing = rows.filter(r => !r.kategori && r.varenummer)
   if (!missing.length) return rows
   const { data, error } = await fetchAllRows(
-    supabase.from('prissammenligning').select('varenummer, kategori, merke, produkt').order('id')
+    () => supabase.from('prissammenligning').select('varenummer, kategori, merke, produkt', { count: 'exact' }).order('id')
   )
   if (error || !data?.length) return rows
   const byVn = {}
@@ -95,25 +96,18 @@ export async function GET(request) {
     return Response.json({ error: 'Server misconfiguration: missing env vars' }, { status: 500 })
   }
 
+  const startedAt = performance.now()
   const { searchParams } = new URL(request.url)
   const dager = parseDager(searchParams.get('dager'), 90)
 
-  let query = supabase.from('prishistorikk').select('*').order('dato', { ascending: true })
-
-  if (dager > 0) {
-    const since = new Date()
-    since.setDate(since.getDate() - dager)
-    query = query.gte('dato', since.toISOString().slice(0, 10))
-  }
-
-  const { data, error } = await fetchAllRows(query)
+  const { data, error } = await fetchHistoryRows(supabase, { since: sinceDate(dager) })
 
   if (error) {
     if (error.code === '42P01' || error.message?.includes('does not exist')) {
       const snapshot = await loadCurrentSnapshot(supabase)
       if (snapshot.length) {
         return Response.json(aggregateByCategoryAndDate(snapshot), {
-          headers: { ...CACHE_HEADERS, 'X-Source': 'snapshot' },
+          headers: { ...cacheHeaders(startedAt), 'X-Source': 'snapshot' },
         })
       }
       return Response.json(
@@ -125,7 +119,7 @@ export async function GET(request) {
     return Response.json({ error: 'Failed to fetch data' }, { status: 500 })
   }
 
-  let pivoted = pivotIfNeeded(data || [])
+  let pivoted = data
 
   if (!pivoted.length) {
     const snapshot = await loadCurrentSnapshot(supabase)
@@ -134,5 +128,5 @@ export async function GET(request) {
     pivoted = await enrichCategories(supabase, pivoted)
   }
 
-  return Response.json(aggregateByCategoryAndDate(pivoted), { headers: CACHE_HEADERS })
+  return Response.json(aggregateByCategoryAndDate(pivoted), { headers: cacheHeaders(startedAt) })
 }

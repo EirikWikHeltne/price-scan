@@ -41,7 +41,7 @@ function PieTooltip({ active, payload }) {
 function renderPieLabel({ name, value, cx, x, y }) {
   const anchor = x > cx ? 'start' : 'end'
   return (
-    <text x={x} y={y} textAnchor={anchor} dominantBaseline="central" fontSize={11} fontFamily="Inter" fill="var(--text)">
+    <text x={x} y={y} textAnchor={anchor} dominantBaseline="central" fontSize={11} fontFamily="inherit" fill="var(--text)">
       {name} ({value})
     </text>
   )
@@ -137,8 +137,8 @@ export default function HomeCharts({ visible, retailers }) {
         <ResponsiveContainer width="100%" height={260}>
           <BarChart data={avgByRetailer} margin={{ top: 10, right: 10, left: 0, bottom: 5 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
-            <XAxis dataKey="name" tick={{ fontSize: 11, fontFamily: 'Inter' }} axisLine={false} tickLine={false} />
-            <YAxis tick={{ fontSize: 11, fontFamily: 'Inter' }} axisLine={false} tickLine={false} width={50} />
+            <XAxis dataKey="name" tick={{ fontSize: 11, fontFamily: 'inherit' }} axisLine={false} tickLine={false} />
+            <YAxis tick={{ fontSize: 11, fontFamily: 'inherit' }} axisLine={false} tickLine={false} width={50} />
             <Tooltip content={<CustomTooltip />} cursor={{ fill: 'var(--bg)' }} />
             <Bar {...CHART_ANIM} dataKey="snitt" name="Snittpris" radius={[4, 4, 0, 0]}>
               {avgByRetailer.map(e => <Cell key={e.name} fill={e.color} />)}
@@ -180,9 +180,9 @@ export default function HomeCharts({ visible, retailers }) {
           <ResponsiveContainer width="100%" height={260}>
             <AreaChart data={priceDistribution} margin={{ top: 10, right: 10, left: 0, bottom: 5 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
-              <XAxis dataKey="range" tick={{ fontSize: 10, fontFamily: 'Inter' }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fontSize: 11, fontFamily: 'Inter' }} axisLine={false} tickLine={false} width={40} />
-              <Tooltip formatter={(v) => [`${v} produkter`, 'Antall']} labelStyle={{ fontFamily: 'Inter' }} />
+              <XAxis dataKey="range" tick={{ fontSize: 10, fontFamily: 'inherit' }} axisLine={false} tickLine={false} />
+              <YAxis tick={{ fontSize: 11, fontFamily: 'inherit' }} axisLine={false} tickLine={false} width={40} />
+              <Tooltip formatter={(v) => [`${v} produkter`, 'Antall']} labelStyle={{ fontFamily: 'inherit' }} />
               <Area {...CHART_ANIM} type="monotone" dataKey="count" name="Antall" stroke="var(--accent)" fill="var(--accent)" fillOpacity={0.15} strokeWidth={2} />
             </AreaChart>
           </ResponsiveContainer>
@@ -197,9 +197,9 @@ export default function HomeCharts({ visible, retailers }) {
           <ResponsiveContainer width="100%" height={260}>
             <BarChart data={spreadByCategory} margin={{ top: 10, right: 10, left: 0, bottom: 5 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
-              <XAxis dataKey="name" tick={{ fontSize: 10, fontFamily: 'Inter' }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fontSize: 11, fontFamily: 'Inter' }} axisLine={false} tickLine={false} width={40} />
-              <Tooltip formatter={(v) => `${fmt(v)} kr`} labelStyle={{ fontFamily: 'Inter' }} />
+              <XAxis dataKey="name" tick={{ fontSize: 10, fontFamily: 'inherit' }} axisLine={false} tickLine={false} />
+              <YAxis tick={{ fontSize: 11, fontFamily: 'inherit' }} axisLine={false} tickLine={false} width={40} />
+              <Tooltip formatter={(v) => `${fmt(v)} kr`} labelStyle={{ fontFamily: 'inherit' }} />
               <Bar {...CHART_ANIM} dataKey="snittSpread" name="Snitt spread" fill="var(--amber)" radius={[4, 4, 0, 0]} />
               <Bar {...CHART_ANIM} dataKey="maxSpread" name="Maks spread" fill="var(--red)" radius={[4, 4, 0, 0]} opacity={0.5} />
             </BarChart>
@@ -215,8 +215,8 @@ export default function HomeCharts({ visible, retailers }) {
           <ResponsiveContainer width="100%" height={320}>
             <RadarChart data={categoryRadar} cx="50%" cy="50%" outerRadius="70%">
               <PolarGrid stroke="var(--border)" />
-              <PolarAngleAxis dataKey="kategori" tick={{ fontSize: 11, fontFamily: 'Inter', fill: 'var(--text)' }} />
-              <PolarRadiusAxis tick={{ fontSize: 10, fontFamily: 'Inter' }} />
+              <PolarAngleAxis dataKey="kategori" tick={{ fontSize: 11, fontFamily: 'inherit', fill: 'var(--text)' }} />
+              <PolarRadiusAxis tick={{ fontSize: 10, fontFamily: 'inherit' }} />
               {retailers.map(r => (
                 <Radar {...CHART_ANIM} key={r.key} name={r.label} dataKey={r.key} stroke={r.color} fill={r.color} fillOpacity={0.1} strokeWidth={2} />
               ))}
