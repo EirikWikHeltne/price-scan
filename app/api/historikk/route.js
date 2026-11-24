@@ -1,7 +1,6 @@
 import { getSupabase } from '@/lib/supabaseServer'
 import { cacheHeaders } from '@/lib/cacheHeaders'
 import { fetchHistoryRows, sinceDate } from '@/lib/historyRows'
-import { aggregateWeekly } from '@/lib/weekly'
 import { NON_PRICE_COLS } from '@/lib/pivot'
 import { parseDager } from '@/lib/parseDager'
 
@@ -49,9 +48,6 @@ export async function GET(request) {
   const produkt = searchParams.get('produkt')
   const varenummer = searchParams.get('varenummer')
   const dager = parseDager(searchParams.get('dager'), 30)
-  // ?gruppering=uke gir ukesnitt per produkt i stedet for én rad per dag —
-  // Ukesnitt-siden trenger bare det, og svaret blir en brøkdel så stort.
-  const weekly = searchParams.get('gruppering') === 'uke'
 
   const { data, error } = await fetchHistoryRows(supabase, {
     since: sinceDate(dager),
@@ -86,5 +82,5 @@ export async function GET(request) {
     }
   }
 
-  return Response.json(weekly ? aggregateWeekly(data) : data, { headers: cacheHeaders(startedAt) })
+  return Response.json(data, { headers: cacheHeaders(startedAt) })
 }

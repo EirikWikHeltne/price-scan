@@ -4,10 +4,9 @@ import Header from '@/components/Header'
 import Footer from '@/components/Footer'
 import { TableSkeleton } from '@/components/Skeleton'
 import { fetchJson } from '@/lib/fetchJson'
-import { deriveRetailers } from '@/lib/retailers'
 import { fmt } from '@/lib/format'
 import { useLastUpdated } from '@/lib/useLastUpdated'
-import { weekMeta } from '@/lib/isoWeek'
+import { buildWeekly } from '@/lib/ukesnitt'
 import { matchesSearch } from '@/lib/search'
 
 const WEEK_RANGES = [
@@ -19,11 +18,9 @@ const WEEK_RANGES = [
 ]
 
 export default function UkesnittPage() {
-  const [history, setHistory]   = useState([])
-  const [products, setProducts] = useState([])
+  const [data, setData]         = useState([])
   const [loading, setLoading]   = useState(true)
   const [error, setError]       = useState(null)
-  const [tableNotFound, setTableNotFound] = useState(false)
 
   const [search, setSearch]     = useState('')
 
@@ -33,49 +30,38 @@ export default function UkesnittPage() {
   const [chain, setChain]       = useState(null)
   const [dager, setDager]       = useState(84)
 
-  const lastUpdated = useLastUpdated(products)
-
-  // Product metadata (kategori/merke/produkt) so filtering works even when the
-  // history fallback omits those columns.
-  useEffect(() => {
-    fetchJson('/api/produkter')
-      .then(d => setProducts(Array.isArray(d) ? d : []))
-      .catch(() => setProducts([]))
-  }, [])
+  const lastUpdated = useLastUpdated()
 
   // Teller opp for hvert kall, slik at et tregt svar for en tidligere valgt
   // periode ikke overskriver svaret for den som er valgt nå.
   const requestId = useRef(0)
 
-  const fetchHistory = useCallback(async () => {
+  // Ukesnittene regnes ut i databasen; svaret er én rad per produkt.
+  const fetchWeekly = useCallback(async () => {
     const id = ++requestId.current
     const isStale = () => id !== requestId.current
     setLoading(true)
     setError(null)
-    setTableNotFound(false)
     try {
-      const json = await fetchJson(`/api/historikk?dager=${dager}&gruppering=uke`)
+      const json = await fetchJson(`/api/ukesnitt?dager=${dager}`)
       if (isStale()) return
-      if (json?.code === 'TABLE_NOT_FOUND') {
-        setTableNotFound(true)
-        setHistory([])
-      } else if (Array.isArray(json)) {
-        setHistory(json)
+      if (Array.isArray(json)) {
+        setData(json)
       } else {
         setError(json?.error || 'Kunne ikke hente prishistorikk')
-        setHistory([])
+        setData([])
       }
     } catch {
       if (isStale()) return
       setError('Kunne ikke hente prishistorikk. Prøv igjen.')
-      setHistory([])
+      setData([])
     }
     setLoading(false)
   }, [dager])
 
-  useEffect(() => { fetchHistory() }, [fetchHistory])
+  useEffect(() => { fetchWeekly() }, [fetchWeekly])
 
-  const retailers = useMemo(() => deriveRetailers(history), [history])
+  const { weeks, rows, retailers } = useMemo(() => buildWeekly(data), [data])
 
   // Default the selected chain to the first retailer once data arrives, and keep
   // the selection valid if the available retailers change.
@@ -84,67 +70,17 @@ export default function UkesnittPage() {
     setChain(prev => (prev && retailers.some(r => r.key === prev) ? prev : retailers[0].key))
   }, [retailers])
 
-  // Lookup of product metadata by varenummer.
-  const metaByVn = useMemo(() => {
-    const m = {}
-    products.forEach(p => { if (p.varenummer) m[p.varenummer] = p })
-    return m
-  }, [products])
-
   const categories = useMemo(() => {
     const set = new Set()
-    products.forEach(p => { if (p.kategori) set.add(p.kategori) })
-    history.forEach(r => { if (r.kategori) set.add(r.kategori) })
+    rows.forEach(r => { if (r.kategori) set.add(r.kategori) })
     return [...set].sort((a, b) => a.localeCompare(b))
-  }, [products, history])
+  }, [rows])
 
   const brands = useMemo(() => {
     const set = new Set()
-    products.forEach(p => { if (p.merke) set.add(p.merke) })
-    history.forEach(r => { if (r.merke) set.add(r.merke) })
+    rows.forEach(r => { if (r.merke) set.add(r.merke) })
     return [...set].sort((a, b) => a.localeCompare(b))
-  }, [products, history])
-
-  // Aggregate into product × week × retailer averages.
-  // products: { [vn]: { vn, produkt, merke, kategori, weeks: { [weekKey]: { [retailerKey]: { sum, count } } } } }
-  const { weeks, rows } = useMemo(() => {
-    if (!history.length || !retailers.length) return { weeks: [], rows: [] }
-
-    const weekMetaByKey = {}
-    const agg = {}
-
-    history.forEach(row => {
-      const dateStr = (row.dato || row.sist_oppdatert || '').slice(0, 10)
-      if (!dateStr) return
-      const wm = weekMeta(dateStr)
-      if (!wm) return
-      weekMetaByKey[wm.key] = wm
-
-      const vn = row.varenummer || row.produkt
-      if (!vn) return
-      const meta = metaByVn[vn] || {}
-      if (!agg[vn]) {
-        agg[vn] = {
-          vn,
-          produkt: row.produkt || meta.produkt || vn,
-          merke: row.merke || meta.merke || '',
-          kategori: row.kategori || meta.kategori || '',
-          weeks: {},
-        }
-      }
-      const wk = agg[vn].weeks[wm.key] || (agg[vn].weeks[wm.key] = {})
-      retailers.forEach(r => {
-        const v = row[r.key]
-        if (v == null || v === '' || isNaN(Number(v))) return
-        const cell = wk[r.key] || (wk[r.key] = { sum: 0, count: 0 })
-        cell.sum += Number(v)
-        cell.count += 1
-      })
-    })
-
-    const weekList = Object.values(weekMetaByKey).sort((a, b) => b.key.localeCompare(a.key))
-    return { weeks: weekList, rows: Object.values(agg) }
-  }, [history, retailers, metaByVn])
+  }, [rows])
 
   // Rows for the currently selected chain, with the average computed per week.
   const chainRows = useMemo(() => {
@@ -154,9 +90,9 @@ export default function UkesnittPage() {
         const values = {}
         let hasAny = false
         weeks.forEach(w => {
-          const cell = p.weeks[w.key]?.[chain]
-          if (cell && cell.count) {
-            values[w.key] = +(cell.sum / cell.count).toFixed(2)
+          const v = p.weeks[w.key]?.[chain]
+          if (v != null) {
+            values[w.key] = v
             hasAny = true
           }
         })
@@ -272,17 +208,9 @@ export default function UkesnittPage() {
           <div className="empty">
             <div className="empty-icon">&#9888;</div>
             <div className="empty-text">{error}</div>
-            <button className="tab active" style={{ marginTop: '1rem' }} onClick={fetchHistory}>
+            <button className="tab active" style={{ marginTop: '1rem' }} onClick={fetchWeekly}>
               Prøv igjen
             </button>
-          </div>
-        ) : tableNotFound ? (
-          <div className="empty">
-            <div className="empty-icon">&#128202;</div>
-            <div className="empty-text">Prishistorikk er ikke tilgjengelig ennå</div>
-            <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginTop: '0.5rem' }}>
-              Ukentlige snittpriser vises her når historiske data er tilgjengelig.
-            </p>
           </div>
         ) : chainRows.length === 0 || weeks.length === 0 ? (
           <div className="empty">

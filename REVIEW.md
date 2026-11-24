@@ -21,8 +21,8 @@ for `lib/` were added.
 The speed round fixed: history endpoints paging through hundreds of Supabase
 requests one at a time (now parallel, with only the needed columns and a
 deterministic sort), 0 kr "not stocked" rows being counted as prices in
-averages and charts, Ukesnitt downloading every daily row instead of weekly
-averages, and Next.js caching Supabase responses indefinitely in its data cache
+averages and charts, Ukesnitt and Kategoritrend averaging raw rows in the app
+(now done by the `ukesnitt` and `kategori_historikk` database functions), and Next.js caching Supabase responses indefinitely in its data cache
 (stale prices).
 
 ## Outstanding
@@ -36,11 +36,6 @@ averages, and Next.js caching Supabase responses indefinitely in its data cache
   Next.js Suspense loading UI.
 
 ### Data
-- **History is aggregated in Node, not in the database.** `lib/historyRows.js`
-  pages through `prishistorikk` (one row per retailer per product per day) in
-  parallel and pivots/averages it in the API route. A Postgres view or RPC that
-  returns the weekly / per-category averages directly would cut a cold request
-  from seconds to milliseconds.
 - **Functions run in `iad1` (US East).** If the Supabase project is in Europe,
   pin the functions next to it with `"regions"` in `vercel.json`.
 

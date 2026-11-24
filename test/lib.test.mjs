@@ -7,7 +7,7 @@ import { parseDager } from '../lib/parseDager.js'
 import { pivotIfNeeded, normalizeRetailerKey } from '../lib/pivot.js'
 import { deriveRetailers } from '../lib/retailers.js'
 import { fetchAllRows } from '../lib/fetchAllRows.js'
-import { aggregateWeekly } from '../lib/weekly.js'
+import { buildWeekly } from '../lib/ukesnitt.js'
 
 test('matchesSearch matches product, brand and item number', () => {
   const row = { produkt: 'Paracet 500 mg', merke: 'Karo', varenummer: 123456 }
@@ -139,16 +139,27 @@ test('pivotIfNeeded ignores zero prices (retailer does not stock the product)', 
   assert.equal('boots' in row, false)
 })
 
-test('aggregateWeekly averages each retailer per product and ISO week', () => {
-  const rows = [
-    { dato: '2026-01-05', varenummer: '1', produkt: 'A', kategori: 'K', merke: 'M', boots: 10, apotek1: 20 },
-    { dato: '2026-01-07', varenummer: '1', produkt: 'A', kategori: 'K', merke: 'M', boots: 13 },
-    { dato: '2026-01-12', varenummer: '1', produkt: 'A', kategori: 'K', merke: 'M', boots: 30 },
-    { dato: '2026-01-06', varenummer: '2', produkt: 'B', apotek1: 5 },
-  ]
-  assert.deepEqual(aggregateWeekly(rows), [
-    { dato: '2026-01-05', varenummer: '1', produkt: 'A', kategori: 'K', merke: 'M', boots: 11.5, apotek1: 20 },
-    { dato: '2026-01-05', varenummer: '2', produkt: 'B', kategori: undefined, merke: undefined, apotek1: 5 },
-    { dato: '2026-01-12', varenummer: '1', produkt: 'A', kategori: 'K', merke: 'M', boots: 30 },
+test('buildWeekly turns per-product weekly averages into table data', () => {
+  const { weeks, rows, retailers } = buildWeekly([
+    {
+      varenummer: '003051', produkt: 'Panodil', merke: 'PANODIL', kategori: 'Paracetamol',
+      uker: {
+        '2026-11-09': { oda: 30, apotek1: 39.9, boots: null },
+        '2026-11-16': { apotek1: '41.50', farmasiet: 38 },
+      },
+    },
+    { varenummer: '017833', produkt: null, merke: null, kategori: null, uker: {} },
   ])
+  assert.deepEqual(weeks.map(w => w.key), ['2026-W47', '2026-W46'])
+  assert.equal(weeks[0].monday, '2026-11-16')
+  // Kjente kjeder først i fast rekkefølge, deretter resten alfabetisk
+  assert.deepEqual(retailers.map(r => r.key), ['farmasiet', 'apotek1', 'oda'])
+  assert.deepEqual(rows[0].weeks['2026-W46'], { oda: 30, apotek1: 39.9 })
+  assert.equal(rows[0].weeks['2026-W47'].apotek1, 41.5)
+  assert.deepEqual(rows[1], { vn: '017833', produkt: '017833', merke: '', kategori: '', weeks: {} })
+})
+
+test('buildWeekly tolerates a missing or malformed response', () => {
+  assert.deepEqual(buildWeekly(null), { weeks: [], rows: [], retailers: [] })
+  assert.deepEqual(buildWeekly({ error: 'x' }), { weeks: [], rows: [], retailers: [] })
 })
