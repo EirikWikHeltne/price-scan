@@ -8,7 +8,9 @@ Prices are scraped every night at 02:00 UTC and stored in Supabase. The scraper 
 
 **1. Supabase**
 
-Run `supabase_schema.sql` in the Supabase SQL editor. This creates the `produkter` and `priser` tables, three convenience views (`siste_priser`, `prissammenligning`, and `prishistorikk` for historical price trends), and RLS policies for public read access.
+Run `supabase_schema.sql` in the Supabase SQL editor. This creates the `produkter` and `priser` tables, three convenience views (`siste_priser`, `prissammenligning`, and `prishistorikk` for historical price trends), and RLS policies for public read access. It also creates two functions the frontend calls for its history pages, `kategori_historikk(dager)` and `ukesnitt(dager)`, which return category and weekly averages already computed in the database.
+
+For a project created before these functions existed, run `supabase_migration_fast_reads.sql` once.
 
 **2. GitHub Secrets**
 
