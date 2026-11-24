@@ -1,7 +1,7 @@
 import { getSupabase } from '@/lib/supabaseServer'
-import { CACHE_HEADERS } from '@/lib/cacheHeaders'
-import { fetchAllRows } from '@/lib/fetchAllRows'
-import { pivotIfNeeded, NON_PRICE_COLS } from '@/lib/pivot'
+import { cacheHeaders } from '@/lib/cacheHeaders'
+import { fetchHistoryRows, sinceDate } from '@/lib/historyRows'
+import { NON_PRICE_COLS } from '@/lib/pivot'
 import { parseDager } from '@/lib/parseDager'
 
 export const dynamic = 'force-dynamic'
@@ -43,33 +43,17 @@ export async function GET(request) {
     return Response.json({ error: 'Server misconfiguration: missing env vars' }, { status: 500 })
   }
 
+  const startedAt = performance.now()
   const { searchParams } = new URL(request.url)
   const produkt = searchParams.get('produkt')
   const varenummer = searchParams.get('varenummer')
   const dager = parseDager(searchParams.get('dager'), 30)
 
-  // Try fetching from prishistorikk table
-  let query = supabase
-    .from('prishistorikk')
-    .select('*')
-    .order('dato', { ascending: true })
-
-  if (varenummer) {
-    query = query.eq('varenummer', varenummer)
-  } else if (produkt) {
-    const safe = produkt.replace(/[(),.\\*"%_]/g, '')
-    if (safe) {
-      query = query.ilike('produkt', `%${safe}%`)
-    }
-  }
-
-  if (dager > 0) {
-    const since = new Date()
-    since.setDate(since.getDate() - dager)
-    query = query.gte('dato', since.toISOString().slice(0, 10))
-  }
-
-  const { data, error } = await fetchAllRows(query)
+  const { data, error } = await fetchHistoryRows(supabase, {
+    since: sinceDate(dager),
+    varenummer,
+    produkt,
+  })
 
   if (error) {
     // If the table doesn't exist, fall back to current prices from prissammenligning
@@ -77,7 +61,7 @@ export async function GET(request) {
       try {
         const rows = await fetchCurrentPriceFallback(supabase, { varenummer, produkt })
         if (rows) {
-          return Response.json(rows, { headers: CACHE_HEADERS })
+          return Response.json(rows, { headers: cacheHeaders(startedAt) })
         }
       } catch (_) { /* ignore fallback errors */ }
 
@@ -91,13 +75,12 @@ export async function GET(request) {
   }
 
   // If prishistorikk exists but has no data for this product, fall back to prissammenligning
-  if (!data?.length) {
+  if (!data.length) {
     const rows = await fetchCurrentPriceFallback(supabase, { varenummer, produkt })
     if (rows) {
-      return Response.json(rows, { headers: CACHE_HEADERS })
+      return Response.json(rows, { headers: cacheHeaders(startedAt) })
     }
   }
 
-  const normalized = pivotIfNeeded(data)
-  return Response.json(normalized, { headers: CACHE_HEADERS })
+  return Response.json(data, { headers: cacheHeaders(startedAt) })
 }

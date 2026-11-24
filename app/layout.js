@@ -1,8 +1,18 @@
+import { Figtree } from 'next/font/google'
 import './globals.css'
 
-// Lastes som <link> i <head> i stedet for @import i CSS, slik at nettleseren
-// oppdager fontene med én gang i stedet for etter at globals.css er lastet.
-const FONTS_URL = 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap'
+// Karos profilfont er Euclid Circular A (se --font-body i globals.css). Den er
+// lisensiert og ligger ikke i repoet, så den vises foreløpig bare på maskiner
+// der den er installert. Figtree er reserven for alle andre, og ligger sammen
+// med resten av appen (next/font) slik at siden ikke må vente på et eget kall
+// til Google Fonts før tekst vises.
+const fallbackFont = Figtree({
+  subsets: ['latin'],
+  weight: ['400', '500', '600', '700'],
+  style: ['normal', 'italic'],
+  display: 'swap',
+  variable: '--font-fallback',
+})
 
 export const metadata = {
   title: 'PrisScanner — Sammenlign apotekpriser',
@@ -26,12 +36,9 @@ export const metadata = {
 
 export default function RootLayout({ children }) {
   return (
-    <html lang="nb">
+    <html lang="nb" className={fallbackFont.variable}>
       <head>
         <meta name="theme-color" content="#110B36" />
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
-        <link rel="stylesheet" href={FONTS_URL} />
       </head>
       <body>{children}</body>
     </html>

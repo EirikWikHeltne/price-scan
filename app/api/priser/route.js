@@ -1,5 +1,5 @@
 import { getSupabase } from '@/lib/supabaseServer'
-import { CACHE_HEADERS } from '@/lib/cacheHeaders'
+import { cacheHeaders } from '@/lib/cacheHeaders'
 import { fetchAllRows } from '@/lib/fetchAllRows'
 
 export const dynamic = 'force-dynamic'
@@ -16,30 +16,30 @@ export async function GET(request) {
   const kategori = searchParams.get('kategori')
   const search = searchParams.get('search')
 
-  let query = supabase
-    .from('prissammenligning')
-    .select('*')
-    .order('kategori')
-    .order('merke')
-    .order('id')
+  // Strip characters with special meaning in PostgREST filter syntax
+  const safe = search ? search.replace(/[(),.\\*"%_]/g, '') : ''
 
-  if (kategori && kategori !== 'alle') {
-    query = query.eq('kategori', kategori)
-  }
+  const startedAt = performance.now()
+  const { data, error } = await fetchAllRows(() => {
+    let query = supabase
+      .from('prissammenligning')
+      .select('*', { count: 'exact' })
+      .order('kategori')
+      .order('merke')
+      .order('id')
 
-  if (search) {
-    // Strip characters with special meaning in PostgREST filter syntax
-    const safe = search.replace(/[(),.\\*"%_]/g, '')
+    if (kategori && kategori !== 'alle') {
+      query = query.eq('kategori', kategori)
+    }
     if (safe) {
       query = query.or(`produkt.ilike.%${safe}%,merke.ilike.%${safe}%,varenummer.ilike.%${safe}%`)
     }
-  }
-
-  const { data, error } = await fetchAllRows(query)
+    return query
+  })
 
   if (error) {
     console.error('Supabase error:', error)
     return Response.json({ error: 'Failed to fetch data' }, { status: 500 })
   }
-  return Response.json(data, { headers: CACHE_HEADERS })
+  return Response.json(data, { headers: cacheHeaders(startedAt) })
 }
