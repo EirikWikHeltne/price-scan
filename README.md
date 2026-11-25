@@ -4,6 +4,8 @@ Daily price monitoring across 6 Norwegian pharmacy and grocery retailers: Apotek
 
 Prices are scraped every night at 02:00 UTC and stored in Supabase. The scraper uses plain HTTP requests where possible, with Playwright as a fallback for JavaScript-rendered pages.
 
+This repository holds both halves: the scraper and database setup (`scraper/`, `supabase_*.sql`) and the web app that shows the prices (`frontend/`, a Next.js app deployed on Vercel).
+
 ## Setup
 
 **1. Supabase**
@@ -92,6 +94,11 @@ python -m pytest
 │   └── scripts/
 │       ├── products.csv          # Product list — edit this to add/remove products
 │       └── seed_products.py      # Upserts products.csv into Supabase
+├── frontend/                     # Next.js web app (Vercel root directory)
+│   ├── app/                      # Pages and API routes
+│   ├── components/
+│   ├── lib/                      # Shared helpers, covered by `npm test`
+│   └── test/
 └── supabase_schema.sql           # Full DB schema, views, and RLS policies
 ```
 
@@ -104,3 +111,15 @@ pip install -r requirements.txt
 playwright install chromium
 python run.py
 ```
+
+### Frontend
+
+```bash
+cd frontend
+npm ci
+# .env.local: NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY
+npm run dev
+npm test && npm run lint
+```
+
+The Vercel project builds from the `frontend/` directory (Settings → Build and Deployment → Root Directory).

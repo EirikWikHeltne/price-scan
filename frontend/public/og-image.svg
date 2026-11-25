@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630">
+  <!-- Left panel - dark green -->
+  <rect x="0" y="0" width="480" height="630" fill="#110B36"/>
+
+  <!-- Right panel - beige -->
+  <rect x="480" y="0" width="720" height="590" fill="#FBF8F5"/>
+
+  <!-- Bottom bar -->
+  <rect x="480" y="590" width="720" height="40" fill="#110B36"/>
+
+  <!-- Barcode lines on left panel -->
+  <g fill="#FFFFFF" opacity="0.85">
+    <rect x="130" y="120" width="10" height="220" rx="2"/>
+    <rect x="150" y="120" width="5" height="220" rx="1"/>
+    <rect x="165" y="120" width="12" height="220" rx="2"/>
+    <rect x="187" y="120" width="5" height="220" rx="1"/>
+    <rect x="202" y="120" width="10" height="220" rx="2"/>
+    <rect x="222" y="120" width="15" height="220" rx="2"/>
+    <rect x="247" y="120" width="5" height="220" rx="1"/>
+    <rect x="262" y="120" width="10" height="220" rx="2"/>
+    <rect x="282" y="120" width="5" height="220" rx="1"/>
+    <rect x="297" y="120" width="12" height="220" rx="2"/>
+    <rect x="319" y="120" width="5" height="220" rx="1"/>
+    <rect x="334" y="120" width="10" height="220" rx="2"/>
+  </g>
+
+  <!-- PS text on left panel -->
+  <text x="240" y="480" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="100" fill="#FFFFFF">K</text>
+
+  <!-- Gold scan line on left panel -->
+  <line x1="100" y1="380" x2="380" y2="380" stroke="#FAD7C2" stroke-width="6" stroke-linecap="round"/>
+  <circle cx="100" cy="380" r="10" fill="#FAD7C2"/>
+  <circle cx="380" cy="380" r="10" fill="#FAD7C2"/>
+
+  <!-- Right panel text -->
+  <text x="560" y="210" font-family="Georgia, 'Times New Roman', serif" font-size="80" fill="#110B36">Karo</text>
+  <text x="560" y="290" font-family="Georgia, 'Times New Roman', serif" font-style="italic" font-size="80" fill="#110B36">Priser</text>
+
+  <!-- Teal divider line -->
+  <line x1="560" y1="310" x2="780" y2="310" stroke="#FAD7C2" stroke-width="3"/>
+
+  <!-- Description text -->
+  <text x="560" y="370" font-family="Arial, Helvetica, sans-serif" font-size="34" fill="#6B7280">Sammenlign apotekpriser</text>
+  <text x="560" y="415" font-family="Arial, Helvetica, sans-serif" font-size="34" fill="#6B7280">på tvers av norske apotek.</text>
+
+  <!-- Gold cross/plus icon -->
+  <g transform="translate(1080, 500)">
+    <rect x="-6" y="-25" width="12" height="50" rx="4" fill="#110B36"/>
+    <rect x="-25" y="-6" width="50" height="12" rx="4" fill="#110B36"/>
+  </g>
+
+  <!-- Bottom bar text -->
+  <text x="600" y="618" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#FAD7C2" letter-spacing="3">KARO HEALTHCARE</text>
+  <circle cx="835" cy="613" r="3" fill="#FAD7C2"/>
+  <text x="855" y="618" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#FAD7C2" letter-spacing="3">APOTEK</text>
+</svg>
