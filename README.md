@@ -86,7 +86,7 @@ python -m pytest
 │   │   ├── vitusapotek.py        # JSON API (/api/products)
 │   │   ├── boots.py              # requests + BeautifulSoup
 │   │   ├── farmasiet.py          # requests + Playwright fallback
-│   │   ├── oda.py                # API + Playwright (grocery)
+│   │   ├── oda.py                # Search API, verified product match (grocery)
 │   │   └── apotera.py            # Playwright
 │   ├── tests/                    # Offline unit tests (pytest)
 │   └── scripts/

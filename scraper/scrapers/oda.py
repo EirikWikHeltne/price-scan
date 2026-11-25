@@ -1,9 +1,16 @@
-"""Oda.com — Next.js CSR grocery store. API + Playwright with response interception."""
-import re, time, json, requests
+"""Oda.com — grocery store with a small range of non-prescription painkillers.
+
+Prices come from Oda's search API, and only from a hit that is verified to be
+the product asked for (brand, form, strength and pack size). Oda has no
+varenummer/EAN search and pads thin results with unrelated products, so an
+unverified hit is far more likely to be wrong than right; a product Oda does
+not sell must get no price.
+"""
+import re, time, requests
 from urllib.parse import quote
 from playwright.sync_api import sync_playwright
 from playwright_stealth import Stealth
-from ._common import code_variants, parse_price_text, safe_url
+from ._common import _to_price, http_session, safe_url
 
 BUTIKK       = "oda"
 BASE         = "https://oda.com"
@@ -25,238 +32,181 @@ _stealth = Stealth(
 )
 
 
-def _dismiss_cookie_banner(page):
-    for selector in [
-        "button:has-text('Aksepter')", "button:has-text('Godta')",
-        "button:has-text('Accept')", "button:has-text('OK')",
-        "[id*='cookie'] button", "[class*='cookie'] button",
-        "[id*='consent'] button", "[class*='consent'] button",
-    ]:
-        try:
-            btn = page.query_selector(selector)
-            if btn and btn.is_visible():
-                btn.click()
-                page.wait_for_timeout(500)
-                return
-        except Exception:
-            pass
+# ---------------------------------------------------------------------------
+# Product matching
+# ---------------------------------------------------------------------------
+
+# Our form abbreviation -> the word Oda uses. Ordered: "tablett" is also part
+# of "brusetablett"/"smeltetablett", so those are checked first.
+_FORMS = (
+    ("bruseta", "brusetablett"),
+    ("smeltab", "smeltetablett"),
+    ("tab",     "tablett"),
+    ("kaps",    "kaps"),
+    ("supp",    "stikkpille"),
+    ("mikstur", "mikstur"),
+)
+_FORM_WORDS = dict(_FORMS)
 
 
-def _extract_oda_product_id(url: str) -> str | None:
-    """Extract Oda's internal product ID from a product URL.
-    URLs look like: /no/products/1125-paracet-paracet-mikstur-24-mg-ml/"""
-    m = re.search(r'/products/(\d+)', url)
+def _norm(text: str | None) -> str:
+    """Lower-case and write measures one way: "24 mg / ml" -> "24mg/ml"."""
+    t = (text or "").lower().replace(" ", " ")
+    t = re.sub(r"(?<=\d),(?=\d)", ".", t)
+    t = re.sub(r"\s*/\s*", "/", t)
+    return re.sub(r"(\d)\s+(mg|ml|g|kg|stk|mcg|µg)\b", r"\1\2", t)
+
+
+def _oda_form(text: str) -> str | None:
+    for form, word in _FORMS:
+        if word in text:
+            return form
+    return None
+
+
+def matches(prod: dict, hit: dict) -> str | None:
+    """Is this Oda search hit the product we track?
+
+    Returns "exact" when everything including the form is confirmed, "plain"
+    when Oda's name states no form and we want an ordinary tablet, and None
+    when the hit is a different product (or cannot be told apart from one).
+    """
+    text = _norm(f"{hit.get('full_name') or ''} {hit.get('name_extra') or ''}")
+    name = _norm(hit.get("full_name"))
+
+    brand = _norm(prod.get("merke")).split()
+    if not brand or not all(re.search(rf"\b{re.escape(w)}\b", name) for w in brand):
+        return None
+
+    form = None
+    for token in _norm(prod.get("produkt")).split():
+        if token in _FORM_WORDS:
+            form = token
+        elif any(c.isdigit() for c in token):
+            # Strength, volume or pack size: "500mg", "24mg/ml", "20enpac".
+            token = re.sub(r"^(\d+)enpac$", r"\1stk", token)
+            if not re.search(rf"(?<![\w./]){re.escape(token)}(?![\w/])", text):
+                return None
+        elif not re.search(rf"\b{re.escape(token)}", text):
+            # Variant name such as ZAPP: a different product without it.
+            return None
+
+    oda_form = _oda_form(text)
+    if form and oda_form == form:
+        return "exact"
+    if oda_form is None and form in (None, "tab"):
+        return "plain"
+    return None
+
+
+def pick_match(prod: dict, hits: list[dict]) -> dict | None:
+    """The verified hit for a product, preferring one with a confirmed form."""
+    plain = None
+    for hit in hits:
+        kind = matches(prod, hit)
+        if kind == "exact":
+            return hit
+        if kind == "plain" and plain is None:
+            plain = hit
+    return plain
+
+
+def _oda_product_id(url: str | None) -> str | None:
+    """Oda's product ID from a URL like /no/products/1125-paracet-mikstur/."""
+    m = re.search(r"/products/(\d+)-", url or "")
     return m.group(1) if m else None
 
 
 # ---------------------------------------------------------------------------
-# API-based search and price fetching (fast path, may be blocked)
+# API access: plain HTTP, through a real browser if that is blocked
 # ---------------------------------------------------------------------------
 
-def _search_url_api(query: str) -> str | None:
-    """Search Oda API. Returns product URL or None. Does NOT throw on 403."""
-    try:
-        r = requests.get(
-            f"{API_BASE}/search/?q={quote(query)}",
-            headers=_REQ_HEADERS, timeout=5
+class _Fetcher:
+    """GETs Oda API JSON. Returns None when no usable answer was obtained."""
+
+    def __init__(self):
+        self._session = http_session(_REQ_HEADERS)
+        self._blocked = False
+        self._pw = self._browser = self._context = None
+
+    def get_json(self, url: str) -> dict | None:
+        if not self._blocked:
+            try:
+                r = self._session.get(url, timeout=10)
+                if r.status_code == 200:
+                    return r.json()
+            except (requests.RequestException, ValueError) as e:
+                print(f"  [oda] API error: {e}")
+                return None
+            if r.status_code != 403:
+                print(f"  [oda] API returned {r.status_code}")
+                return None
+            print("  [oda] API blocked (403), fetching through a browser instead")
+            self._blocked = True
+        return self._get_json_browser(url)
+
+    def _launch(self, pw):
+        return pw.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage",
+            ],
         )
-        if r.status_code != 200:
-            return None
-        data = r.json()
-        items = data.get("items") or data.get("results") or []
-        for entry in items:
-            item = entry.get("item", entry) if isinstance(entry, dict) else {}
-            front_url = item.get("front_url", "")
-            if front_url:
-                return safe_url(front_url, BASE, ALLOWED_HOST)
-    except Exception:
-        pass
-    return None
 
-
-def _fetch_price_api(url: str) -> tuple[float | None, bool | None]:
-    """Fetch price via Oda product API. Returns (price, in_stock)."""
-    pid = _extract_oda_product_id(url)
-    if not pid:
-        return None, None
-    try:
-        r = requests.get(
-            f"{API_BASE}/products/{pid}/",
-            headers=_REQ_HEADERS, timeout=5
-        )
-        if r.status_code != 200:
-            return None, None
-        d = r.json()
-        price_obj = d.get("current_price") or {}
-        price_val = price_obj.get("price") if isinstance(price_obj, dict) else None
-        if price_val:
-            price_float = float(price_val)
-            if price_float > 0:
-                return price_float, d.get("in_stock", True)
-    except Exception:
-        pass
-    return None, None
-
-
-# ---------------------------------------------------------------------------
-# Playwright-based search (fallback when API is blocked)
-# ---------------------------------------------------------------------------
-
-def _search_url_browser(context, prod: dict) -> str | None:
-    """Search for a product on Oda using the browser. Returns URL or None."""
-    # Build search queries: product name is much more effective than varenummer
-    # since Oda uses its own internal IDs
-    queries = []
-    if prod.get("merke") and prod.get("produkt"):
-        # e.g. "Paracet tabletter 500mg" — clean up the coded product name
-        name = prod["produkt"]
-        # Simplify coded names: "TAB 500MG 20ENPAC" → "tabletter 500mg"
-        name = re.sub(r'\b(\d+)ENPAC\b', '', name)
-        name = name.replace("TAB ", "tabletter ").replace("KAPS ", "kapsler ")
-        name = name.replace("SUPP ", "stikkpille ").replace("BRUSETA ", "brusetabletter ")
-        name = name.replace("MIKSTUR ", "mikstur ").replace("SMELTAB ", "smeltetabletter ")
-        queries.append(f"{prod['merke']} {name}".strip())
-    if prod.get("merke"):
-        queries.append(prod["merke"])
-    queries.extend(code_variants(prod["varenummer"]))
-
-    page = None
-    try:
-        page = context.new_page()
-        for query in queries:
-            try:
-                page.goto(
-                    f"{BASE}/no/search/?q={quote(query)}",
-                    timeout=15000
-                )
-                _dismiss_cookie_banner(page)
-                try:
-                    page.wait_for_selector("a[href*='/no/products/']", timeout=8000)
-                except Exception:
-                    pass
-                link = page.query_selector("a[href*='/no/products/']")
-                if link:
-                    href = link.get_attribute("href")
-                    url = safe_url(href, BASE, ALLOWED_HOST)
-                    if url:
-                        page.close()
-                        return url
-            except Exception:
-                pass
-        page.close()
-    except Exception as e:
-        print(f"  [oda] browser search error {prod['varenummer']}: {e}")
-        if page:
-            try:
-                page.close()
-            except Exception:
-                pass
-    return None
-
-
-# ---------------------------------------------------------------------------
-# Playwright-based price extraction with response interception
-# ---------------------------------------------------------------------------
-
-def _fetch_price_browser(context, url: str) -> tuple[float | None, bool | None]:
-    """Fetch price by loading the page in Playwright and intercepting API calls."""
-    pris = None
-    lager = None
-    page = None
-    try:
-        page = context.new_page()
-
-        # Intercept XHR/fetch responses — Oda's Next.js app makes API calls
-        # that return product data including prices
-        captured = {}
-
-        def _on_response(response):
-            try:
-                ct = response.headers.get("content-type", "")
-                if "json" not in ct or response.status != 200:
-                    return
-                resp_url = response.url
-                # Only process product-related API responses
-                if "/products/" not in resp_url and "/search/" not in resp_url:
-                    return
-                body = response.text()
-                # Look for price patterns in the JSON
-                for pm in re.findall(
-                    r'"(?:price|gross_price)"\s*:\s*"?([\d]+(?:[.,]\d+)?)"?', body
-                ):
-                    val = float(pm.replace(",", "."))
-                    if 1 < val < 50000 and "price" not in captured:
-                        captured["price"] = val
-                # Check stock
-                if '"availability":"' in body:
-                    if '"availability":"in_stock"' in body.lower() or '"in_stock":true' in body.lower():
-                        captured["stock"] = True
-                    elif '"availability":"out_of_stock"' in body.lower():
-                        captured["stock"] = False
-            except Exception:
-                pass
-
-        page.on("response", _on_response)
-        page.goto(url, timeout=15000)
-        _dismiss_cookie_banner(page)
-
-        # Wait for content to load (Next.js client-side rendering)
+    def _get_json_browser(self, url: str) -> dict | None:
+        page = None
         try:
-            page.wait_for_load_state("networkidle", timeout=10000)
-        except Exception:
-            pass
-
-        # Check intercepted API data first (most reliable for Next.js)
-        if "price" in captured:
-            pris = captured["price"]
-            lager = captured.get("stock")
-        else:
-            # Fallback: check __NEXT_DATA__ script tag
-            next_data = page.query_selector("script#__NEXT_DATA__")
-            if next_data:
+            if self._context is None:
+                self._pw = sync_playwright().start()
+                self._browser = self._launch(self._pw)
+                self._context = self._browser.new_context(
+                    user_agent=_UA,
+                    locale="nb-NO",
+                    timezone_id="Europe/Oslo",
+                    viewport={"width": 1920, "height": 1080},
+                    extra_http_headers={"Accept-Language": "nb-NO,nb;q=0.9,no;q=0.8"},
+                )
+                # Cap every Playwright call — the 30s library default applies
+                # per call, and uncapped calls have hung scrape runs for hours.
+                self._context.set_default_timeout(15000)
+                _stealth.apply_stealth_sync(self._context)
+            page = self._context.new_page()
+            # The API response itself is the document: nothing is read from a
+            # rendered page, where prices of other products are everywhere.
+            response = page.goto(url, timeout=15000)
+            if response is None or response.status != 200:
+                print(f"  [oda] browser got {response.status if response else 'no response'}")
+                return None
+            return response.json()
+        except Exception as e:
+            print(f"  [oda] browser fetch error: {e}")
+            return None
+        finally:
+            if page:
                 try:
-                    nd = json.loads(next_data.inner_text())
-                    nd_str = json.dumps(nd)
-                    for pm in re.findall(r'"(?:price|gross_price)"\s*:\s*"?([\d]+(?:[.,]\d+)?)"?', nd_str):
-                        val = float(pm.replace(",", "."))
-                        if 1 < val < 50000:
-                            pris = val
-                            break
+                    page.close()
                 except Exception:
                     pass
 
-            # Fallback: check rendered DOM
-            if pris is None:
-                for sel in [
-                    "[data-testid*='price']", "[data-testid*='Price']",
-                    "[class*='price']", "[class*='Price']",
-                ]:
-                    el = page.query_selector(sel)
-                    if el:
-                        # Shared parser: handles "1 299,00" (plain-space
-                        # thousands separator), which read as 1.0 here.
-                        pris = parse_price_text(el.inner_text())
-                        if pris:
-                            break
-
-            # Stock from page content
-            if lager is None:
-                content_lower = page.content().lower()
-                if "utsolgt" in content_lower or "out_of_stock" in content_lower:
-                    lager = False
-                elif "legg til" in content_lower or "handlekurv" in content_lower:
-                    lager = True  # If add-to-cart is available, it's in stock
-
-        page.close()
-    except Exception as e:
-        print(f"  [oda] browser price error: {e}")
-        if page:
+    def close(self):
+        for closer in (
+            getattr(self._context, "close", None),
+            getattr(self._browser, "close", None),
+            getattr(self._pw, "stop", None),
+        ):
             try:
-                page.close()
+                if closer:
+                    closer()
             except Exception:
                 pass
 
-    return pris, lager
+
+def _search(fetcher, query: str) -> list[dict]:
+    data = fetcher.get_json(f"{API_BASE}/search/?q={quote(query)}")
+    hits = data.get("products") if isinstance(data, dict) else None
+    return [h for h in hits if isinstance(h, dict)] if isinstance(hits, list) else []
 
 
 # ---------------------------------------------------------------------------
@@ -265,90 +215,33 @@ def _fetch_price_browser(context, url: str) -> tuple[float | None, bool | None]:
 
 def run(products):
     results, resolved = [], {}
-
-    # Probe API availability once (don't kill everything on first 403)
-    api_ok = True
-    try:
-        r = requests.get(f"{API_BASE}/search/?q=paracet", headers=_REQ_HEADERS, timeout=5)
-        if r.status_code == 403:
-            print("  [oda] API blocked (403), will use browser only")
-            api_ok = False
-        elif r.status_code != 200:
-            print(f"  [oda] API probe returned {r.status_code}, will try per-request")
-    except Exception:
-        print("  [oda] API unreachable, will use browser only")
-        api_ok = False
-
-    # Start Playwright (Oda is Next.js, browser is always needed as fallback)
-    pw = sync_playwright().start()
-    browser = pw.chromium.launch(
-        headless=True,
-        args=[
-            "--no-sandbox",
-            "--disable-blink-features=AutomationControlled",
-            "--disable-dev-shm-usage",
-        ]
-    )
-    context = browser.new_context(
-        user_agent=_UA,
-        locale="nb-NO",
-        timezone_id="Europe/Oslo",
-        viewport={"width": 1920, "height": 1080},
-        screen={"width": 1920, "height": 1080},
-        extra_http_headers={"Accept-Language": "nb-NO,nb;q=0.9,no;q=0.8"},
-    )
-    # Cap every Playwright call — the 30s library default applies per
-    # call, and uncapped calls have hung scrape runs for hours.
-    context.set_default_timeout(15000)
-    _stealth.apply_stealth_sync(context)
-
+    searches = {}  # brand -> hits; Oda's range is a handful of brands
+    fetcher = _Fetcher()
     try:
         for prod in products:
-            url = prod.get("url_oda")
+            # A cached url_oda is not trusted: the product is looked up and
+            # verified on every run, which costs one search per brand.
+            brand = (prod.get("merke") or "").strip()
+            if brand and brand not in searches:
+                searches[brand] = _search(fetcher, brand)
+                time.sleep(0.15)
+            hit = pick_match(prod, searches.get(brand, []))
 
-            # Step 1: Resolve URL
-            if not url and api_ok:
-                # API search: try product name first (more effective than varenummer)
-                if prod.get("merke"):
-                    url = _search_url_api(prod["merke"])
-                if not url:
-                    for code in code_variants(prod["varenummer"]):
-                        url = _search_url_api(code)
-                        if url:
-                            break
-                if not url and prod.get("ean"):
-                    url = _search_url_api(prod["ean"])
-                if url:
+            pris = lager = None
+            if hit:
+                pris = _to_price(hit.get("gross_price"))
+                available = (hit.get("availability") or {}).get("is_available")
+                lager = available if isinstance(available, bool) else None
+                url = safe_url(hit.get("front_url"), BASE, ALLOWED_HOST)
+                # Compared by product ID so a renamed slug is not a rewrite.
+                pid = _oda_product_id(url)
+                if pid and pid == str(hit.get("id")) and pid != _oda_product_id(prod.get("url_oda")):
                     resolved[prod["varenummer"]] = url
-
-            if not url:
-                # Browser search fallback
-                url = _search_url_browser(context, prod)
-                if url:
-                    resolved[prod["varenummer"]] = url
-
-            if not url:
-                print(f"  [oda] no URL: {prod['varenummer']}")
-                results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": None, "pa_lager": None})
-                continue
-
-            # Step 2: Fetch price
-            pris, lager = None, None
-
-            # Try API first (fast)
-            if api_ok:
-                pris, lager = _fetch_price_api(url)
-
-            # Browser fallback (always available)
-            if pris is None:
-                pris, lager = _fetch_price_browser(context, url)
-
-            print(f"  [oda] {prod['varenummer']}: {pris}")
+                print(f"  [oda] {prod['varenummer']}: {pris} ({hit.get('full_name')}, {hit.get('name_extra')})")
+            else:
+                print(f"  [oda] no match: {prod['varenummer']}")
             results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": pris, "pa_lager": lager})
-            time.sleep(0.15)
     finally:
-        context.close()
-        browser.close()
-        pw.stop()
+        fetcher.close()
 
     return results, resolved
