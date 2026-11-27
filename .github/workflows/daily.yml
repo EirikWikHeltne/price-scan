@@ -11,11 +11,50 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  scrape:
+  # The product list is seeded once, before the scrape jobs read it.
+  seed:
     runs-on: ubuntu-latest
-    # A normal run takes ~1h40m; run.py gives up on stuck scrapers after 2.5h
-    # and inserts what it has. This is the backstop above that (GitHub's
-    # default is 6h, which a single wedged browser call once burned through).
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: scraper
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ hashFiles('scraper/requirements.txt') }}
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Seed products
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python scripts/seed_products.py
+
+  scrape:
+    needs: seed
+    runs-on: ubuntu-latest
+    # The product list is split over 8 jobs of roughly 550 products each;
+    # run.py picks its share from SHARD_INDEX. Four run at a time, so the
+    # retailers see a handful of concurrent visitors rather than eight.
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    name: scrape (${{ matrix.shard }})
+    # run.py gives up on stuck scrapers after 2.5h and inserts what it has.
+    # This is the backstop above that (GitHub's default is 6h, which a single
+    # wedged browser call once burned through).
     timeout-minutes: 200
     defaults:
       run:
@@ -54,14 +93,10 @@ jobs:
             libcups2 libdrm2 libxkbcommon0 libxcomposite1 \
             libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2t64
 
-      - name: Seed products
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: python scripts/seed_products.py
-
       - name: Run scraper
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SHARD_INDEX: ${{ matrix.shard }}
+          SHARD_TOTAL: 8
         run: python run.py

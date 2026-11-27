@@ -9,6 +9,8 @@ import Header from '@/components/Header'
 import Footer from '@/components/Footer'
 import { fetchJson } from '@/lib/fetchJson'
 import { deriveRetailers } from '@/lib/retailers'
+import CategoryFilter from '@/components/CategoryFilter'
+import { NO_FILTER, matchesLevels } from '@/lib/categories'
 import { fmt, fmtDate, fmtDateShort } from '@/lib/format'
 import { useLastUpdated } from '@/lib/useLastUpdated'
 import { matchesSearch } from '@/lib/search'
@@ -37,6 +39,10 @@ function HistoryTooltip({ active, payload, label }) {
   )
 }
 
+// Produktlisten i sidefeltet tegnes ikke lenger enn dette; resten nås med
+// søk eller kategorivalg.
+const MAX_LISTED = 200
+
 export default function HistorikkPage() {
   const [products, setProducts] = useState([])
   const [historyData, setHistoryData] = useState([])
@@ -44,7 +50,7 @@ export default function HistorikkPage() {
   const [historyLoading, setHistoryLoading] = useState(false)
   const [selectedProduct, setSelectedProduct] = useState(null)
   const [dager, setDager] = useState(30)
-  const [kategori, setKategori] = useState('alle')
+  const [cat, setCat] = useState(NO_FILTER)
   const [search, setSearch] = useState('')
   const deferredSearch = useDeferredValue(search)
   const [tableNotFound, setTableNotFound] = useState(false)
@@ -110,16 +116,12 @@ export default function HistorikkPage() {
     return deriveRetailers(all)
   }, [products, historyData])
 
-  const categories = useMemo(() => {
-    return [...new Set(products.map(r => r.kategori).filter(Boolean))].sort()
-  }, [products])
-
   const filteredProducts = useMemo(() => {
     let d = products
-    if (kategori !== 'alle') d = d.filter(r => r.kategori === kategori)
+    d = d.filter(r => matchesLevels(r, cat))
     if (deferredSearch.trim()) d = d.filter(r => matchesSearch(r, deferredSearch))
     return d
-  }, [products, kategori, deferredSearch])
+  }, [products, cat, deferredSearch])
 
   // Format history data for the chart
   const chartData = useMemo(() => {
@@ -160,17 +162,7 @@ export default function HistorikkPage() {
             onChange={e => setSearch(e.target.value)}
           />
         </div>
-        <div className="filter-tabs">
-          {['alle', ...categories].map(k => (
-            <button
-              key={k}
-              className={`tab ${kategori === k ? 'active' : ''}`}
-              onClick={() => setKategori(k)}
-            >
-              {k === 'alle' ? 'Alle kategorier' : k}
-            </button>
-          ))}
-        </div>
+        <CategoryFilter rows={products} value={cat} onChange={setCat} />
       </div>
 
       <div className="historikk-layout">
@@ -192,7 +184,7 @@ export default function HistorikkPage() {
                 </div>
               ) : (
                 <div className="historikk-product-list">
-                  {filteredProducts.map(p => (
+                  {filteredProducts.slice(0, MAX_LISTED).map(p => (
                     <button
                       key={p.id}
                       className={`historikk-product-item ${selectedProduct?.id === p.id ? 'active' : ''}`}
@@ -203,6 +195,11 @@ export default function HistorikkPage() {
                       <div className="product-vn">{p.varenummer}</div>
                     </button>
                   ))}
+                  {filteredProducts.length > MAX_LISTED && (
+                    <div className="cat-path" style={{ padding: '0.75rem' }}>
+                      Viser {MAX_LISTED} av {filteredProducts.length}. Søk eller velg kategori for å snevre inn.
+                    </div>
+                  )}
                 </div>
               )}
             </>
@@ -221,7 +218,7 @@ export default function HistorikkPage() {
               <div className="historikk-chart-header">
                 <div>
                   <h2 className="chart-title">{selectedProduct.produkt}</h2>
-                  <p className="chart-desc">{selectedProduct.merke} &middot; {selectedProduct.varenummer} &middot; {selectedProduct.kategori}</p>
+                  <p className="chart-desc">{selectedProduct.merke} &middot; {selectedProduct.varenummer} &middot; {[selectedProduct.kategori, selectedProduct.niva1, selectedProduct.niva2].filter(Boolean).join(' › ')}</p>
                 </div>
                 <div className="filter-tabs">
                   {TIME_RANGES.map(r => (

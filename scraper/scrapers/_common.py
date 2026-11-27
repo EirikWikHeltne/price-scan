@@ -1,6 +1,7 @@
 """Shared helpers used by multiple scrapers."""
 import json
 import re
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
 import requests
@@ -247,6 +248,33 @@ def fetch_price_browser(context, url: str, wait_selector: str, goto_timeout: int
             page.close()
         except Exception:
             pass
+
+
+# A product with no known page at a retailer is usually one the retailer does
+# not sell, and searching for it costs a request or a browser page load. With
+# thousands of products that must not happen every night: a new product is
+# searched for on its first nights, after that once per cycle.
+LOOKUP_NEW_DAYS = 2
+LOOKUP_CYCLE_DAYS = 7
+
+
+def due_for_lookup(prod: dict, now: datetime | None = None) -> bool:
+    """Should a product without a known page be searched for on this run?"""
+    now = now or datetime.now(timezone.utc)
+    try:
+        created = datetime.fromisoformat(str(prod.get("opprettet")).replace("Z", "+00:00"))
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        if now - created < timedelta(days=LOOKUP_NEW_DAYS):
+            return True
+    except ValueError:
+        pass
+    try:
+        slot = int(prod.get("id"))
+    except (TypeError, ValueError):
+        return True
+    # Spread by product ID so each night carries an even share of the retries.
+    return (slot + now.toordinal()) % LOOKUP_CYCLE_DAYS == 0
 
 
 def code_variants(code: str) -> list[str]:

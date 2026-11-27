@@ -3,7 +3,7 @@ import re, time
 from bs4 import BeautifulSoup
 from urllib.parse import quote
 from ._common import (
-    GONE_STATUSES, extract_stock, code_variants, safe_url,
+    GONE_STATUSES, due_for_lookup, extract_stock, code_variants, safe_url,
     extract_jsonld_price, http_session,
 )
 
@@ -71,9 +71,14 @@ def fetch_price(session, url):
 def run(products):
     results, resolved = [], {}
     session = http_session(HEADS)
+    skipped = 0
     for p in products:
         vn = p["varenummer"]
         cached = p.get("url_boots")
+        if not cached and not due_for_lookup(p):
+            # Not found on earlier runs; searched for again once per cycle.
+            skipped += 1
+            continue
         url = cached or search_url(session, vn)
         if not url:
             print(f"  [boots] no URL: {vn}")
@@ -92,4 +97,6 @@ def run(products):
         print(f"  [boots] {vn}: {pris}")
         results.append({"produkt_id": p["id"], "butikk": BUTIKK, "pris": pris, "pa_lager": lager})
         time.sleep(0.1)
+    if skipped:
+        print(f"  [boots] {skipped} products without a known page not searched for on this run")
     return results, resolved

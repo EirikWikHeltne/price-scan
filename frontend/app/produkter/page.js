@@ -4,7 +4,9 @@ import Header from '@/components/Header'
 import Footer from '@/components/Footer'
 import { TableSkeleton } from '@/components/Skeleton'
 import { fetchJson } from '@/lib/fetchJson'
-import { CAT_CLASS } from '@/lib/categories'
+import CategoryFilter from '@/components/CategoryFilter'
+import ShowMore, { ROW_STEP } from '@/components/ShowMore'
+import { CAT_CLASS, NO_FILTER, matchesLevels, categoryPath } from '@/lib/categories'
 import { fmtDate } from '@/lib/format'
 import { matchesSearch } from '@/lib/search'
 import { compareValues } from '@/lib/sort'
@@ -15,7 +17,8 @@ export default function ProdukterPage() {
   const [error, setError]       = useState(null)
   const [search, setSearch]     = useState('')
   const deferredSearch = useDeferredValue(search)
-  const [kategori, setKategori] = useState('alle')
+  const [cat, setCat]           = useState(NO_FILTER)
+  const [rowLimit, setRowLimit] = useState(ROW_STEP)
   const [sortCol, setSortCol]   = useState('kategori')
   const [sortDir, setSortDir]   = useState('asc')
 
@@ -44,10 +47,10 @@ export default function ProdukterPage() {
 
   const filtered = useMemo(() => {
     let d = data
-    if (kategori !== 'alle') d = d.filter(r => r.kategori === kategori)
+    d = d.filter(r => matchesLevels(r, cat))
     if (deferredSearch.trim()) d = d.filter(r => matchesSearch(r, deferredSearch))
     return [...d].sort((a, b) => compareValues(a[sortCol], b[sortCol], sortDir))
-  }, [data, kategori, deferredSearch, sortCol, sortDir])
+  }, [data, cat, deferredSearch, sortCol, sortDir])
 
   // Stats by category
   const categoryStats = useMemo(() => {
@@ -79,6 +82,10 @@ export default function ProdukterPage() {
       Merke: row.merke,
       Varenummer: row.varenummer,
       Kategori: row.kategori,
+      'Nivå 1': row.niva1 ?? null,
+      'Nivå 2': row.niva2 ?? null,
+      'Nivå 3': row.niva3 ?? null,
+      Segment: row.segment ?? null,
       'Sist oppdatert': row.sist_oppdatert
         ? new Date(row.sist_oppdatert).toLocaleDateString('nb-NO')
         : '',
@@ -105,17 +112,7 @@ export default function ProdukterPage() {
             onChange={e => setSearch(e.target.value)}
           />
         </div>
-        <div className="filter-tabs">
-          {['alle', ...categories].map(k => (
-            <button
-              key={k}
-              className={`tab ${kategori === k ? 'active' : ''}`}
-              onClick={() => setKategori(k)}
-            >
-              {k === 'alle' ? 'Alle kategorier' : k}
-            </button>
-          ))}
-        </div>
+        <CategoryFilter rows={data} value={cat} onChange={setCat} />
         <div className="controls-right">
           <span className="count-badge">{filtered.length} produkter</span>
           <button
@@ -182,14 +179,14 @@ export default function ProdukterPage() {
                 <th onClick={() => handleSort('merke')} className={sortCol === 'merke' ? 'sorted' : ''} style={{ width: '160px' }}>
                   Merke {renderSortIcon('merke')}
                 </th>
-                <th onClick={() => handleSort('kategori')} className={sortCol === 'kategori' ? 'sorted' : ''} style={{ width: '140px' }}>
+                <th onClick={() => handleSort('kategori')} className={sortCol === 'kategori' ? 'sorted' : ''} style={{ width: '220px' }}>
                   Kategori {renderSortIcon('kategori')}
                 </th>
                 <th style={{ width: '140px' }}>Sist oppdatert</th>
               </tr>
             </thead>
             <tbody>
-              {filtered.map(row => (
+              {filtered.slice(0, rowLimit).map(row => (
                 <tr key={row.id}>
                   <td>
                     <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
@@ -206,6 +203,7 @@ export default function ProdukterPage() {
                     <span className={`cat-pill ${CAT_CLASS[row.kategori] || ''}`}>
                       {row.kategori}
                     </span>
+                    {categoryPath(row) && <div className="cat-path">{categoryPath(row)}</div>}
                   </td>
                   <td>
                     <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
@@ -218,6 +216,14 @@ export default function ProdukterPage() {
               ))}
             </tbody>
           </table>
+        )}
+        {!loading && !error && (
+          <ShowMore
+            shown={Math.min(rowLimit, filtered.length)}
+            total={filtered.length}
+            onMore={() => setRowLimit(n => n + ROW_STEP)}
+            onAll={() => setRowLimit(Infinity)}
+          />
         )}
       </div>
 

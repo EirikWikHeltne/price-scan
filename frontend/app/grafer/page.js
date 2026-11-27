@@ -11,6 +11,8 @@ import Footer from '@/components/Footer'
 import { ChartSkeleton } from '@/components/Skeleton'
 import { fetchJson } from '@/lib/fetchJson'
 import { deriveRetailers } from '@/lib/retailers'
+import CategoryFilter from '@/components/CategoryFilter'
+import { NO_FILTER, matchesLevels } from '@/lib/categories'
 import { fmt } from '@/lib/format'
 
 function GrafTooltip({ active, payload, label }) {
@@ -41,7 +43,7 @@ export default function GraferPage() {
   const [data, setData]       = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState(null)
-  const [kategori, setKategori] = useState('alle')
+  const [cat, setCat]         = useState(NO_FILTER)
   const [merke, setMerke]     = useState('alle')
 
   const loadData = useCallback(async () => {
@@ -61,22 +63,16 @@ export default function GraferPage() {
 
   const retailers = useMemo(() => deriveRetailers(data), [data])
 
-  const categories = useMemo(() => {
-    return [...new Set(data.map(r => r.kategori).filter(Boolean))].sort()
-  }, [data])
-
   const brands = useMemo(() => {
-    let filtered = data
-    if (kategori !== 'alle') filtered = filtered.filter(r => r.kategori === kategori)
+    const filtered = data.filter(r => matchesLevels(r, cat))
     return [...new Set(filtered.map(r => r.merke).filter(Boolean))].sort()
-  }, [data, kategori])
+  }, [data, cat])
 
   const filtered = useMemo(() => {
-    let d = data
-    if (kategori !== 'alle') d = d.filter(r => r.kategori === kategori)
+    let d = data.filter(r => matchesLevels(r, cat))
     if (merke !== 'alle') d = d.filter(r => r.merke === merke)
     return d
-  }, [data, kategori, merke])
+  }, [data, cat, merke])
 
   // Chart 1: Average price per retailer
   const avgByRetailer = useMemo(() => {
@@ -157,17 +153,7 @@ export default function GraferPage() {
       <Header active="/grafer" showLastUpdated={false} />
 
       <div className="controls">
-        <div className="filter-tabs">
-          {['alle', ...categories].map(k => (
-            <button
-              key={k}
-              className={`tab ${kategori === k ? 'active' : ''}`}
-              onClick={() => { setKategori(k); setMerke('alle') }}
-            >
-              {k === 'alle' ? 'Alle kategorier' : k}
-            </button>
-          ))}
-        </div>
+        <CategoryFilter rows={data} value={cat} onChange={next => { setCat(next); setMerke('alle') }} />
         <select
           className="brand-select"
           aria-label="Merke"

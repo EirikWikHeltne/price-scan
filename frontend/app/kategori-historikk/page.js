@@ -11,7 +11,8 @@ import { ChartSkeleton } from '@/components/Skeleton'
 import { fetchJson } from '@/lib/fetchJson'
 import { deriveRetailers } from '@/lib/retailers'
 import { fmt, fmtDate, fmtDateShort } from '@/lib/format'
-import { CAT_CLASS } from '@/lib/categories'
+import CategoryFilter from '@/components/CategoryFilter'
+import { ALL, CAT_CLASS, NO_FILTER, setLevel } from '@/lib/categories'
 import { useLastUpdated } from '@/lib/useLastUpdated'
 
 const TIME_RANGES = [
@@ -52,6 +53,22 @@ export default function KategoriHistorikkPage() {
   const [dager, setDager]                     = useState(90)
   const [retailerKey, setRetailerKey]         = useState('snitt')
   const [hiddenCategories, setHiddenCategories] = useState(() => new Set())
+  // Grenen av kategoritreet som vises: ingenting valgt gir de seks
+  // kategoriene, en kategori gir gruppene på nivå 1, og nivå 1 gir nivå 2.
+  const [branch, setBranch]                   = useState(NO_FILTER)
+  const [tree, setTree]                       = useState([])
+
+  useEffect(() => {
+    fetchJson('/api/produkter')
+      .catch(() => [])
+      .then(json => setTree(Array.isArray(json) ? json : []))
+  }, [])
+
+  function changeBranch(next) {
+    // Nivå 2 er det dypeste som vises som grupper, så det kan ikke velges.
+    setBranch(setLevel(next, 'niva2', ALL))
+    setHiddenCategories(new Set())
+  }
 
   const lastUpdated = useLastUpdated()
 
@@ -67,6 +84,8 @@ export default function KategoriHistorikkPage() {
     try {
       const params = new URLSearchParams()
       params.set('dager', String(dager))
+      if (branch.kategori !== ALL) params.set('kategori', branch.kategori)
+      if (branch.niva1 !== ALL) params.set('niva1', branch.niva1)
       const json = await fetchJson(`/api/kategori-historikk?${params}`)
       if (isStale()) return
       if (json?.code === 'TABLE_NOT_FOUND') {
@@ -85,7 +104,7 @@ export default function KategoriHistorikkPage() {
       setData([])
     }
     setLoading(false)
-  }, [dager])
+  }, [dager, branch.kategori, branch.niva1])
 
   useEffect(() => { fetchData() }, [fetchData])
 
@@ -229,6 +248,10 @@ export default function KategoriHistorikkPage() {
       <Header active="/kategori-historikk" lastUpdated={lastUpdated} />
 
       <div className="controls">
+        <CategoryFilter rows={tree} value={branch} onChange={changeBranch} levels={2} />
+      </div>
+
+      <div className="controls">
         <div className="filter-tabs">
           {TIME_RANGES.map(r => (
             <button
@@ -250,7 +273,7 @@ export default function KategoriHistorikkPage() {
           ))}
         </select>
         <div className="controls-right">
-          <span className="count-badge">{categories.length} kategorier</span>
+          <span className="count-badge">{categories.length} {branch.kategori === ALL ? 'kategorier' : 'grupper'}</span>
           <button
             className="btn-excel"
             onClick={downloadExcel}

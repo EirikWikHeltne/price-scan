@@ -4,7 +4,8 @@ import { KNOWN_RETAILER_STYLES, FALLBACK_COLORS } from './retailers.js'
 /**
  * Gjør svaret fra /api/ukesnitt om til det tabellen trenger:
  *   weeks:     ukene som finnes i dataene, nyeste først
- *   rows:      { vn, produkt, merke, kategori, weeks: { [ukenøkkel]: { [kjede]: snitt } } }
+ *   rows:      { vn, produkt, merke, kategori, niva1, niva2,
+ *                weeks: { [ukenøkkel]: { [kjede]: snitt } } }
  *   retailers: kjedene som har minst ett ukesnitt, kjente kjeder først
  */
 export function buildWeekly(data) {
@@ -30,6 +31,8 @@ export function buildWeekly(data) {
       produkt: p.produkt || p.varenummer,
       merke: p.merke || '',
       kategori: p.kategori || '',
+      niva1: p.niva1 || '',
+      niva2: p.niva2 || '',
       weeks,
     }
   })

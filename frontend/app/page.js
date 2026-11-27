@@ -6,7 +6,9 @@ import Footer from '@/components/Footer'
 import { TableSkeleton, ChartSkeleton } from '@/components/Skeleton'
 import { deriveRetailers } from '@/lib/retailers'
 import { fmt } from '@/lib/format'
-import { CAT_CLASS } from '@/lib/categories'
+import CategoryFilter from '@/components/CategoryFilter'
+import ShowMore, { ROW_STEP } from '@/components/ShowMore'
+import { CAT_CLASS, NO_FILTER, matchesLevels, categoryPath } from '@/lib/categories'
 import { useLastUpdated } from '@/lib/useLastUpdated'
 import { fetchJson } from '@/lib/fetchJson'
 import { matchesSearch } from '@/lib/search'
@@ -22,7 +24,8 @@ export default function Page() {
   const [loading, setLoading]   = useState(true)
   const [error, setError]       = useState(null)
   const [search, setSearch]     = useState('')
-  const [kategori, setKategori] = useState('alle')
+  const [cat, setCat]           = useState(NO_FILTER)
+  const [rowLimit, setRowLimit] = useState(ROW_STEP)
   const [merke, setMerke]       = useState('alle')
   const [sortCol, setSortCol]   = useState('merke')
   const [sortDir, setSortDir]   = useState('asc')
@@ -53,17 +56,13 @@ export default function Page() {
 
   const retailers = useMemo(() => deriveRetailers(data), [data])
 
-  const categories = useMemo(() => {
-    return [...new Set(data.map(r => r.kategori).filter(Boolean))].sort((a, b) => a.localeCompare(b))
-  }, [data])
-
   // Rader etter kategori + søk (det serveren tidligere filtrerte på)
   const filtered = useMemo(() => {
     let d = data
-    if (kategori !== 'alle') d = d.filter(r => r.kategori === kategori)
+    d = d.filter(r => matchesLevels(r, cat))
     if (deferredSearch.trim()) d = d.filter(r => matchesSearch(r, deferredSearch))
     return d
-  }, [data, kategori, deferredSearch])
+  }, [data, cat, deferredSearch])
 
   const brands = useMemo(() => {
     if (!filtered.length) return []
@@ -119,6 +118,9 @@ export default function Page() {
         Merke: row.merke,
         Varenummer: row.varenummer,
         Kategori: row.kategori,
+        'Nivå 1': row.niva1 ?? null,
+        'Nivå 2': row.niva2 ?? null,
+        'Nivå 3': row.niva3 ?? null,
       }
       retailers.forEach(r => { obj[r.label] = row[r.key] ?? null })
       obj['Laveste pris'] = min
@@ -148,17 +150,7 @@ export default function Page() {
             onChange={e => setSearch(e.target.value)}
           />
         </div>
-        <div className="filter-tabs">
-          {['alle', ...categories].map(k => (
-            <button
-              key={k}
-              className={`tab ${kategori === k ? 'active' : ''}`}
-              onClick={() => setKategori(k)}
-            >
-              {k === 'alle' ? 'Alle kategorier' : k}
-            </button>
-          ))}
-        </div>
+        <CategoryFilter rows={data} value={cat} onChange={setCat} />
         <select
           className="brand-select"
           aria-label="Merke"
@@ -258,7 +250,7 @@ export default function Page() {
               </tr>
             </thead>
             <tbody>
-              {sorted.map(row => {
+              {sorted.slice(0, rowLimit).map(row => {
                 const prices = retailers.map(r => row[r.key]).filter(v => v !== null && v !== undefined)
                 const min = prices.length ? Math.min(...prices) : null
                 const max = prices.length ? Math.max(...prices) : null
@@ -275,6 +267,7 @@ export default function Page() {
                       <span className={`cat-pill ${CAT_CLASS[row.kategori] || ''}`}>
                         {row.kategori}
                       </span>
+                      {categoryPath(row) && <div className="cat-path">{categoryPath(row)}</div>}
                     </td>
                     {retailers.map(r => {
                       const val = row[r.key]
@@ -312,6 +305,14 @@ export default function Page() {
               })}
             </tbody>
           </table>
+        )}
+        {!loading && !error && (
+          <ShowMore
+            shown={Math.min(rowLimit, sorted.length)}
+            total={sorted.length}
+            onMore={() => setRowLimit(n => n + ROW_STEP)}
+            onAll={() => setRowLimit(Infinity)}
+          />
         )}
       </div>
 

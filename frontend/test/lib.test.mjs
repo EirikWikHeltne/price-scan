@@ -8,6 +8,10 @@ import { pivotIfNeeded, normalizeRetailerKey } from '../lib/pivot.js'
 import { deriveRetailers } from '../lib/retailers.js'
 import { fetchAllRows } from '../lib/fetchAllRows.js'
 import { buildWeekly } from '../lib/ukesnitt.js'
+import { branchArgs } from '../lib/branchArgs.js'
+import {
+  NO_FILTER, setLevel, matchesLevels, levelOptions, categoryPath, isSunCare,
+} from '../lib/categories.js'
 
 test('matchesSearch matches product, brand and item number', () => {
   const row = { produkt: 'Paracet 500 mg', merke: 'Karo', varenummer: 123456 }
@@ -156,10 +160,71 @@ test('buildWeekly turns per-product weekly averages into table data', () => {
   assert.deepEqual(retailers.map(r => r.key), ['farmasiet', 'apotek1', 'oda'])
   assert.deepEqual(rows[0].weeks['2026-W46'], { oda: 30, apotek1: 39.9 })
   assert.equal(rows[0].weeks['2026-W47'].apotek1, 41.5)
-  assert.deepEqual(rows[1], { vn: '017833', produkt: '017833', merke: '', kategori: '', weeks: {} })
+  assert.deepEqual(rows[1], { vn: '017833', produkt: '017833', merke: '', kategori: '', niva1: '', niva2: '', weeks: {} })
 })
 
 test('buildWeekly tolerates a missing or malformed response', () => {
   assert.deepEqual(buildWeekly(null), { weeks: [], rows: [], retailers: [] })
   assert.deepEqual(buildWeekly({ error: 'x' }), { weeks: [], rows: [], retailers: [] })
+})
+
+// --- kategoritreet ---------------------------------------------------------
+
+const TREE = [
+  { id: 1, kategori: 'Hudpleie', niva1: 'Body', niva2: 'Hand care' },
+  { id: 2, kategori: 'Hudpleie', niva1: 'Body', niva2: 'Deodorants' },
+  { id: 3, kategori: 'Hudpleie', niva1: 'Sun & tan', niva2: 'After sun' },
+  { id: 4, kategori: 'Smerte', niva1: 'Topical pain (M02A)', niva2: null },
+  { id: 5, kategori: 'Munnpleie' },
+]
+
+test('levelOptions: undernivåene følger det som er valgt over', () => {
+  assert.deepEqual(levelOptions(TREE, NO_FILTER), {
+    kategori: ['Hudpleie', 'Munnpleie', 'Smerte'], niva1: [], niva2: [],
+  })
+  const body = setLevel(setLevel(NO_FILTER, 'kategori', 'Hudpleie'), 'niva1', 'Body')
+  assert.deepEqual(levelOptions(TREE, body), {
+    kategori: ['Hudpleie', 'Munnpleie', 'Smerte'],
+    niva1: ['Body', 'Sun & tan'],
+    niva2: ['Deodorants', 'Hand care'],
+  })
+  // Produkter uten undernivåer (før migreringen) gir ingen valg, ikke tomme valg
+  assert.deepEqual(levelOptions(TREE, setLevel(NO_FILTER, 'kategori', 'Munnpleie')).niva1, [])
+})
+
+test('setLevel nullstiller nivåene under', () => {
+  const deep = { kategori: 'Hudpleie', niva1: 'Body', niva2: 'Hand care' }
+  assert.deepEqual(setLevel(deep, 'niva1', 'Sun & tan'), { kategori: 'Hudpleie', niva1: 'Sun & tan', niva2: 'alle' })
+  assert.deepEqual(setLevel(deep, 'kategori', 'Smerte'), { kategori: 'Smerte', niva1: 'alle', niva2: 'alle' })
+  assert.deepEqual(setLevel(deep, 'niva2', ''), { kategori: 'Hudpleie', niva1: 'Body', niva2: 'alle' })
+})
+
+test('matchesLevels filtrerer på alle valgte nivåer', () => {
+  const ids = f => TREE.filter(r => matchesLevels(r, f)).map(r => r.id)
+  assert.deepEqual(ids(NO_FILTER), [1, 2, 3, 4, 5])
+  assert.deepEqual(ids({ kategori: 'Hudpleie', niva1: 'alle', niva2: 'alle' }), [1, 2, 3])
+  assert.deepEqual(ids({ kategori: 'Hudpleie', niva1: 'Body', niva2: 'Hand care' }), [1])
+})
+
+test('categoryPath og isSunCare', () => {
+  assert.equal(categoryPath(TREE[0]), 'Body › Hand care')
+  assert.equal(categoryPath(TREE[3]), 'Topical pain (M02A)')
+  assert.equal(categoryPath(TREE[4]), '')
+  assert.deepEqual(TREE.filter(isSunCare).map(r => r.id), [3])
+  assert.equal(isSunCare({ kategori: 'Solkrem' }), true)
+  assert.equal(isSunCare({ kategori: 'Hudpleie', niva1: 'Face' }), false)
+})
+
+test('undernivåene regnes ikke som kjeder', () => {
+  const rows = [{ id: 1, produkt: 'A', kategori: 'Smerte', niva1: '2024', niva2: 'x', niva3: null, segment: 'Karo', boots: 10 }]
+  assert.deepEqual(deriveRetailers(rows).map(r => r.key), ['boots'])
+})
+
+test('branchArgs: gren av kategoritreet fra spørringen', () => {
+  const args = q => branchArgs(new URLSearchParams(q))
+  assert.deepEqual(args('dager=30'), {})
+  assert.deepEqual(args('kategori=alle&niva1=Body'), {})
+  assert.deepEqual(args('kategori=Hudpleie'), { under_kategori: 'Hudpleie' })
+  assert.deepEqual(args('kategori=Hudpleie&niva1=Sun+%26+tan'), { under_kategori: 'Hudpleie', under_niva1: 'Sun & tan' })
+  assert.deepEqual(args('kategori=Hudpleie&niva1=alle'), { under_kategori: 'Hudpleie' })
 })
