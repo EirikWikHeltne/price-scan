@@ -228,3 +228,72 @@ test('branchArgs: gren av kategoritreet fra spørringen', () => {
   assert.deepEqual(args('kategori=Hudpleie&niva1=Sun+%26+tan'), { under_kategori: 'Hudpleie', under_niva1: 'Sun & tan' })
   assert.deepEqual(args('kategori=Hudpleie&niva1=alle'), { under_kategori: 'Hudpleie' })
 })
+
+import {
+  median, productPrices, groupKeyFor, retailerIndex, indexMatrix, segmentLadder, spreadSummary,
+} from '../lib/insights.js'
+
+const KEYS = ['a', 'b', 'c']
+
+test('productPrices indexes each retailer against the product mean', () => {
+  const p = productPrices({ a: 90, b: '110', c: null }, KEYS)
+  assert.equal(p.snitt, 100)
+  assert.deepEqual(Object.keys(p.index), ['a', 'b'])
+  assert.equal(Math.round(p.index.a), 90)
+  assert.equal(Math.round(p.index.b), 110)
+  assert.equal(productPrices({ a: 50, b: 0 }, KEYS).index, null) // 0 kr is not a price
+  assert.equal(productPrices({ a: null }, KEYS), null)
+})
+
+test('retailerIndex compares like for like, not average shelf price', () => {
+  // b only stocks the expensive product but is the cheaper chain on it
+  const rows = [{ a: 10, c: 10 }, { a: 220, b: 180 }]
+  const index = retailerIndex(rows, KEYS)
+  assert.deepEqual(index.map(d => d.key), ['b', 'c', 'a'])
+  assert.equal(index[0].index, 90)
+  assert.equal(index[0].antall, 1)
+  assert.equal(index[2].index, 105)
+  assert.deepEqual(retailerIndex([{ a: 10 }], KEYS), [])
+})
+
+test('indexMatrix groups by the given level and skips ungrouped products', () => {
+  const rows = [
+    { kategori: 'Hud', a: 90, b: 110 },
+    { kategori: 'Hud', a: 80, b: 120 },
+    { kategori: 'Fot', a: 100, b: 100 },
+    { kategori: null, a: 1, b: 2 },
+    { kategori: 'Fot', a: 5 },
+  ]
+  const m = indexMatrix(rows, KEYS, 'kategori')
+  assert.deepEqual(m.map(g => [g.gruppe, g.antall]), [['Hud', 2], ['Fot', 1]])
+  assert.deepEqual(m[0].celler.a, { index: 85, antall: 2 })
+})
+
+test('segmentLadder needs enough products in two segments', () => {
+  const mk = (segment, pris) => ({ kategori: 'Hud', segment, a: pris })
+  const rows = [
+    ...[100, 120, 140].map(p => mk('Karo', p)),
+    ...[40, 60, 80].map(p => mk('Egne merker', p)),
+    mk('Andre', 500), // too few to count as a segment, still part of the group
+    { kategori: 'Fot', segment: 'Karo', a: 10 },
+  ]
+  const [hud, ...rest] = segmentLadder(rows, KEYS, 'kategori')
+  assert.equal(rest.length, 0)
+  assert.equal(hud.median, 100)
+  assert.deepEqual(Object.keys(hud.segmenter), ['Karo', 'Egne merker'])
+  assert.equal(Math.round(hud.segmenter.Karo.avvik), 20)
+  assert.equal(Math.round(hud.segmenter['Egne merker'].avvik), -40)
+})
+
+test('spreadSummary, median and groupKeyFor', () => {
+  assert.equal(median([3, 1, 2]), 2)
+  assert.equal(median([4, 1, 2, 3]), 2.5)
+  assert.equal(median([]), null)
+  const s = spreadSummary([{ a: 100, b: 150 }, { a: 100, b: 110 }, { a: 100, b: 130 }, { a: 7 }], KEYS)
+  assert.equal(s.antall, 3)
+  assert.equal(Math.round(s.medianPct), 30)
+  assert.equal(groupKeyFor(NO_FILTER), 'kategori')
+  assert.equal(groupKeyFor(setLevel(NO_FILTER, 'kategori', 'Hud')), 'niva1')
+  assert.equal(groupKeyFor({ kategori: 'Hud', niva1: 'Body', niva2: 'alle' }), 'niva2')
+  assert.equal(groupKeyFor({ kategori: 'Hud', niva1: 'Body', niva2: 'Hand' }), 'niva3')
+})

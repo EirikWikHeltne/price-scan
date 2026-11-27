@@ -14,21 +14,8 @@ import { deriveRetailers } from '@/lib/retailers'
 import CategoryFilter from '@/components/CategoryFilter'
 import { NO_FILTER, matchesLevels } from '@/lib/categories'
 import { fmt } from '@/lib/format'
-
-function GrafTooltip({ active, payload, label }) {
-  if (!active || !payload?.length) return null
-  return (
-    <div className="chart-tooltip">
-      <div className="chart-tooltip-label">{label}</div>
-      {payload.map(p => (
-        <div key={p.name} className="chart-tooltip-row">
-          <span className="chart-tooltip-dot" style={{ background: p.payload?.color || p.color }}></span>
-          {fmt(p.value)} kr
-        </div>
-      ))}
-    </div>
-  )
-}
+import InsightCharts from '@/components/InsightCharts'
+import { SEGMENTS, groupKeyFor, retailerIndex, spreadSummary } from '@/lib/insights'
 
 function renderGrafPieLabel({ name, value, cx, x, y }) {
   const anchor = x > cx ? 'start' : 'end'
@@ -45,6 +32,7 @@ export default function GraferPage() {
   const [error, setError]     = useState(null)
   const [cat, setCat]         = useState(NO_FILTER)
   const [merke, setMerke]     = useState('alle')
+  const [segment, setSegment] = useState('alle')
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -71,19 +59,27 @@ export default function GraferPage() {
   const filtered = useMemo(() => {
     let d = data.filter(r => matchesLevels(r, cat))
     if (merke !== 'alle') d = d.filter(r => r.merke === merke)
+    if (segment !== 'alle') d = d.filter(r => r.segment === segment)
     return d
-  }, [data, cat, merke])
+  }, [data, cat, merke, segment])
 
-  // Chart 1: Average price per retailer
-  const avgByRetailer = useMemo(() => {
-    return retailers.map(r => {
-      const vals = filtered.map(row => row[r.key]).filter(v => v != null).map(Number)
-      return {
-        name: r.label,
-        snitt: vals.length ? +(vals.reduce((s, v) => s + v, 0) / vals.length).toFixed(2) : 0,
-        color: r.color,
-      }
-    })
+  // Segmentene finnes først når kategoritreet er lagt inn i databasen.
+  const segments = useMemo(
+    () => SEGMENTS.filter(s => data.some(r => r.segment === s)),
+    [data]
+  )
+  const groupKey = groupKeyFor(cat)
+
+  // Nøkkeltall over grafene
+  const summary = useMemo(() => {
+    const keys = retailers.map(r => r.key)
+    const labels = Object.fromEntries(retailers.map(r => [r.key, r.label]))
+    const index = retailerIndex(filtered, keys).map(d => ({ ...d, label: labels[d.key] }))
+    return {
+      ...spreadSummary(filtered, keys),
+      lowest: index.length > 1 ? index[0] : null,
+      highest: index.length > 1 ? index[index.length - 1] : null,
+    }
   }, [filtered, retailers])
 
   // Chart 2: Cheapest retailer distribution (pie)
@@ -163,6 +159,17 @@ export default function GraferPage() {
           <option value="alle">Alle merker</option>
           {brands.map(b => <option key={b} value={b}>{b}</option>)}
         </select>
+        {segments.length > 1 && (
+          <select
+            className="brand-select"
+            aria-label="Segment"
+            value={segment}
+            onChange={e => setSegment(e.target.value)}
+          >
+            <option value="alle">Alle segmenter</option>
+            {segments.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+        )}
         <div className="controls-right">
           <span className="count-badge">{filtered.length} produkter</span>
         </div>
@@ -184,34 +191,42 @@ export default function GraferPage() {
           <div className="empty-text">Ingen produkter funnet</div>
         </div>
       ) : (
-        <div className="charts-grid">
-          <div className="chart-card">
-            <h3 className="chart-title">Gjennomsnittspris per apotek</h3>
-            <p className="chart-desc">Snittpris basert på {filtered.length} produkter</p>
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={avgByRetailer} margin={{ top: 10, right: 10, left: 0, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
-                <XAxis
-                  dataKey="name"
-                  tick={{ fontSize: 11, fontFamily: 'inherit' }}
-                  axisLine={false}
-                  tickLine={false}
-                />
-                <YAxis
-                  tick={{ fontSize: 11, fontFamily: 'inherit' }}
-                  axisLine={false}
-                  tickLine={false}
-                  width={50}
-                />
-                <Tooltip content={<GrafTooltip />} cursor={{ fill: 'var(--bg)' }} />
-                <Bar {...CHART_ANIM} dataKey="snitt" name="Snittpris" radius={[4, 4, 0, 0]}>
-                  {avgByRetailer.map(e => (
-                    <Cell key={e.name} fill={e.color} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
+        <>
+        <div className="stats-bar">
+          <div className="stat">
+            <span className="stat-label">Sammenlignbare produkter</span>
+            <span className="stat-value">{summary.antall}</span>
+            <span className="stat-sub">med pris hos minst to kjeder</span>
           </div>
+          {summary.lowest && (
+            <div className="stat">
+              <span className="stat-label">Lavest prisnivå</span>
+              <span className="stat-value">{summary.lowest.label}</span>
+              <span className="stat-sub">indeks {fmt(summary.lowest.index)}</span>
+            </div>
+          )}
+          {summary.highest && (
+            <div className="stat">
+              <span className="stat-label">Høyest prisnivå</span>
+              <span className="stat-value">{summary.highest.label}</span>
+              <span className="stat-sub">indeks {fmt(summary.highest.index)}</span>
+            </div>
+          )}
+          {summary.medianPct != null && (
+            <div className="stat">
+              <span className="stat-label">Typisk prisforskjell</span>
+              <span className="stat-value">{fmt(summary.medianPct)} %</span>
+              <span className="stat-sub">median, dyrest mot billigst</span>
+            </div>
+          )}
+        </div>
+        <div className="charts-grid">
+          <InsightCharts
+            rows={filtered}
+            retailers={retailers}
+            groupKey={groupKey}
+            hasSegments={segments.length > 1 && segment === 'alle'}
+          />
 
           <div className="chart-card">
             <h3 className="chart-title">Billigst oftest</h3>
@@ -313,6 +328,7 @@ export default function GraferPage() {
             )}
           </div>
         </div>
+        </>
       )}
 
       <Footer left="Karo Healthcare Norway" />
