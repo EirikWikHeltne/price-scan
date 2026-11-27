@@ -1,11 +1,18 @@
 import { getSupabase } from '@/lib/supabaseServer'
 import { cacheHeaders } from '@/lib/cacheHeaders'
 import { parseDager } from '@/lib/parseDager'
+import { branchArgs } from '@/lib/branchArgs'
 
-// Svarer med resultatet av en databasefunksjon som tar ?dager= og returnerer
-// ferdig aggregert JSON. Aggregeringen gjøres i Postgres, slik at vi henter
-// noen hundre rader i ett kall i stedet for å bla gjennom hele prishistorikken.
-export async function respondWithRpc(request, fn, defaultDager) {
+// Svarer med resultatet av en databasefunksjon som tar ?dager= (og eventuelt
+// en gren av kategoritreet) og returnerer ferdig aggregert JSON.
+// Aggregeringen gjøres i Postgres, slik at vi henter noen hundre rader i ett
+// kall i stedet for å bla gjennom hele prishistorikken.
+//
+// `unfilteredFallback`: hvis databasen ikke har funksjonen med gren-
+// argumentene ennå (supabase_migration_category_tree.sql er ikke kjørt),
+// svar med hele resultatet i stedet for en feil. Bare for sider som selv
+// filtrerer radene på kategori.
+export async function respondWithRpc(request, fn, defaultDager, { unfilteredFallback = false } = {}) {
   let supabase
   try {
     supabase = getSupabase()
@@ -15,17 +22,20 @@ export async function respondWithRpc(request, fn, defaultDager) {
 
   const { searchParams } = new URL(request.url)
   const dager = parseDager(searchParams.get('dager'), defaultDager)
+  const branch = branchArgs(searchParams)
 
   const startedAt = performance.now()
-  const { data, error } = await supabase.rpc(fn, { dager })
+  let { data, error } = await supabase.rpc(fn, { dager, ...branch })
+  // PGRST202: ingen funksjon med dette navnet og disse argumentene.
+  if (error?.code === 'PGRST202' && unfilteredFallback && Object.keys(branch).length) {
+    ;({ data, error } = await supabase.rpc(fn, { dager }))
+  }
 
   if (error) {
     console.error('Supabase error:', error)
-    // PGRST202: funksjonen finnes ikke — migreringen
-    // supabase_migration_fast_reads.sql (i rotmappen) er ikke kjørt.
     const missing = error.code === 'PGRST202'
     return Response.json(
-      { error: missing ? `Databasefunksjonen ${fn} mangler` : 'Failed to fetch data' },
+      { error: missing ? `Databasefunksjonen ${fn} mangler eller er utdatert. Kjør SQL-migreringene i rotmappen.` : 'Failed to fetch data' },
       { status: 500, headers: { 'Cache-Control': 'no-store' } }
     )
   }

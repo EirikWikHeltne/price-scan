@@ -4,7 +4,12 @@ create table public.produkter (
   ean              text,
   merke            text not null,
   produkt          text not null,
-  kategori         text not null,
+  kategori         text not null,  -- top level of the category tree
+  niva1            text,
+  niva2            text,
+  niva3            text,
+  produsent        text,
+  segment          text,           -- 'Karo', 'Egne merker' or 'Andre'
   url_farmasiet    text,
   url_boots        text,
   url_vitusapotek  text,
@@ -30,6 +35,7 @@ create index on priser (scraped_at desc);
 create index on priser (produkt_id, scraped_at desc);
 create index idx_priser_produkt_butikk_scraped on priser (produkt_id, butikk, scraped_at desc);
 create index on produkter (kategori);
+create index idx_produkter_kategoritre on produkter (kategori, niva1, niva2);
 create index on produkter (merke);
 
 -- Latest price per product and retailer: one index lookup each, so the cost
@@ -61,7 +67,8 @@ select
   max(case when pr.butikk = 'apotera'     then pr.pris end) as apotera,
   min(pr.pris) as laveste_pris,
   max(pr.pris) as hoyeste_pris,
-  max(pr.scraped_at) as sist_oppdatert
+  max(pr.scraped_at) as sist_oppdatert,
+  p.niva1, p.niva2, p.niva3, p.segment
 from produkter p
 cross join (values
   ('farmasiet'), ('boots'), ('vitusapotek'), ('apotek1'), ('oda'), ('apotera')
@@ -74,7 +81,8 @@ cross join lateral (
   limit 1
 ) pr
 where p.aktiv = true
-group by p.id, p.varenummer, p.merke, p.produkt, p.kategori;
+group by p.id, p.varenummer, p.merke, p.produkt, p.kategori,
+         p.niva1, p.niva2, p.niva3, p.segment;
 
 create view prishistorikk as
 select
@@ -108,38 +116,53 @@ grant select on public.prishistorikk to anon, authenticated;
 --    that found a price), so a manual re-run on the same day does not count
 --    twice. Rows without a price are ignored. `dager` <= 0 means all history.
 
--- Average price per category, retailer and day:
+-- Average price per group, retailer and day:
 --   [{ dato, kategori, antall, snitt, <butikk>: snitt, ... }, ...]
+-- The groups are the top-level categories; with `under_kategori` they are
+-- that category's nivå 1 groups, and with `under_niva1` as well, the nivå 2
+-- groups below it. The group name is always returned as `kategori`.
 -- `snitt` is the mean of the retailer means, so a retailer with more product
 -- coverage does not dominate. `antall` is the number of products with a price.
-create or replace function public.kategori_historikk(dager integer default 90)
+-- Only products that are still tracked (aktiv) are included.
+create or replace function public.kategori_historikk(
+  dager integer default 90,
+  under_kategori text default null,
+  under_niva1 text default null
+)
 returns json
 language sql
 stable
 set search_path = public
 as $$
-  with daglig as (
+  with gruppert as (
+    select p.id as produkt_id,
+           case when under_kategori is null then p.kategori
+                when under_niva1 is null then p.niva1
+                else p.niva2 end as kategori
+    from produkter p
+    where p.aktiv
+      and (under_kategori is null or p.kategori = under_kategori)
+      and (under_niva1 is null or p.niva1 = under_niva1)
+  ),
+  daglig as (
     select distinct on (pr.produkt_id, pr.butikk, pr.scraped_at::date)
-      pr.produkt_id, pr.butikk, pr.scraped_at::date as dato, pr.pris
+      pr.produkt_id, pr.butikk, pr.scraped_at::date as dato, pr.pris, g.kategori
     from priser pr
+    join gruppert g on g.produkt_id = pr.produkt_id
     where pr.pris is not null
+      and g.kategori is not null
       and pr.scraped_at >= case when dager <= 0 then '-infinity'::timestamptz
                                 else (current_date - dager)::timestamptz end
     order by pr.produkt_id, pr.butikk, pr.scraped_at::date, pr.scraped_at desc
   ),
-  med_kategori as (
-    select d.dato, p.kategori, d.butikk, d.produkt_id, d.pris
-    from daglig d
-    join produkter p on p.id = d.produkt_id
-  ),
   per_butikk as (
     select dato, kategori, butikk, avg(pris) as snitt
-    from med_kategori
+    from daglig
     group by dato, kategori, butikk
   ),
   antall as (
     select dato, kategori, count(distinct produkt_id) as antall
-    from med_kategori
+    from daglig
     group by dato, kategori
   ),
   per_dag as (
@@ -160,18 +183,33 @@ as $$
 $$;
 
 -- Average price per product, retailer and ISO week (keyed by its Monday):
---   [{ varenummer, produkt, merke, kategori,
+--   [{ varenummer, produkt, merke, kategori, niva1, niva2, niva3,
 --      uker: { "2026-11-16": { <butikk>: snitt, ... }, ... } }, ...]
-create or replace function public.ukesnitt(dager integer default 84)
+-- `under_kategori` and `under_niva1` limit the answer to one branch of the
+-- category tree, which keeps it small enough to send to the browser.
+-- Only products that are still tracked (aktiv) are included.
+create or replace function public.ukesnitt(
+  dager integer default 84,
+  under_kategori text default null,
+  under_niva1 text default null
+)
 returns json
 language sql
 stable
 set search_path = public
 as $$
-  with daglig as (
+  with utvalg as (
+    select p.id
+    from produkter p
+    where p.aktiv
+      and (under_kategori is null or p.kategori = under_kategori)
+      and (under_niva1 is null or p.niva1 = under_niva1)
+  ),
+  daglig as (
     select distinct on (pr.produkt_id, pr.butikk, pr.scraped_at::date)
       pr.produkt_id, pr.butikk, pr.scraped_at::date as dato, pr.pris
     from priser pr
+    join utvalg u on u.id = pr.produkt_id
     where pr.pris is not null
       and pr.scraped_at >= case when dager <= 0 then '-infinity'::timestamptz
                                 else (current_date - dager)::timestamptz end
@@ -200,6 +238,9 @@ as $$
         'produkt', p.produkt,
         'merke', p.merke,
         'kategori', p.kategori,
+        'niva1', p.niva1,
+        'niva2', p.niva2,
+        'niva3', p.niva3,
         'uker', pp.uker
       )
       order by p.produkt, p.id
@@ -210,5 +251,5 @@ as $$
   join produkter p on p.id = pp.produkt_id
 $$;
 
-grant execute on function public.kategori_historikk(integer) to anon, authenticated, service_role;
-grant execute on function public.ukesnitt(integer) to anon, authenticated, service_role;
+grant execute on function public.kategori_historikk(integer, text, text) to anon, authenticated, service_role;
+grant execute on function public.ukesnitt(integer, text, text) to anon, authenticated, service_role;

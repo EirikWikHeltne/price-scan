@@ -3,7 +3,7 @@ import re, time
 from urllib.parse import quote, urlparse
 from playwright.sync_api import sync_playwright
 from ._common import (
-    code_variants, safe_url, http_session,
+    code_variants, due_for_lookup, safe_url, http_session,
     fetch_price_http, fetch_price_browser,
 )
 
@@ -118,8 +118,8 @@ def _search_url_browser(context, varenummer, variants):
                 pass
 
 
-def _resolve_url(context, sitemap_index, varenummer):
-    """Sitemap index → browser search.
+def _resolve_url(context, sitemap_index, varenummer, search=True):
+    """Sitemap index → browser search (skipped when `search` is false).
 
     Sitemap keys come from the URL slug, which may keep or drop leading
     zeros ("051946" vs "51946"), so try every variant.
@@ -129,6 +129,8 @@ def _resolve_url(context, sitemap_index, varenummer):
         url = sitemap_index.get(code)
         if url:
             return url
+    if not search:
+        return None
     return _search_url_browser(context, varenummer, variants)
 
 
@@ -192,14 +194,21 @@ def run(products):
         # explicit timeout have hung scrape runs for hours.
         context.set_default_timeout(15000)
 
+        skipped = 0
         for prod in products:
             vn = prod["varenummer"]
             cached = prod.get("url_apotek1")
             url = cached
             if not url:
-                url = _resolve_url(context, sitemap_index, vn)
+                # The sitemap lookup is free and done every run; the slow
+                # on-site search only when the product is due for one.
+                search = due_for_lookup(prod)
+                url = _resolve_url(context, sitemap_index, vn, search=search)
                 if url:
                     resolved[vn] = url
+                elif not search:
+                    skipped += 1
+                    continue
 
             if not url:
                 print(f"  [apotek1] no URL: {vn}")
@@ -221,6 +230,8 @@ def run(products):
             results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": pris, "pa_lager": lager})
             time.sleep(0.1)
 
+        if skipped:
+            print(f"  [apotek1] {skipped} products without a known page not searched for on this run")
         context.close()
         browser.close()
     return results, resolved

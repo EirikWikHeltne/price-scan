@@ -6,6 +6,7 @@ export const PRICE_VAL_COLS = ['pris', 'price', 'verdi', 'value']
 // Columns that are never per-retailer prices
 export const NON_PRICE_COLS = new Set([
   'id', 'produktid', 'produkt', 'merke', 'varenummer', 'kategori',
+  'niva1', 'niva2', 'niva3', 'segment', 'ean', 'produsent',
   'sist_oppdatert', 'laveste_pris', 'hoyeste_pris', 'dato',
   // Long-format markers — if pivot ever fails to fire, don't let these
   // get picked up as retailer columns.

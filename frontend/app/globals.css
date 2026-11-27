@@ -335,12 +335,17 @@ td { padding: 0.6rem 0.75rem; font-size: 0.8rem; vertical-align: middle; }
 .retailer-header { display: flex; align-items: center; gap: 5px; }
 .retailer-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
 
-.cat-lotion { background: #EBF5FB; color: #1A6B9A; border-color: #BEE3F8; }
-.cat-paracetamol { background: #FFF3E0; color: #E65100; border-color: #FFCC80; }
-.cat-mouthwash { background: #E8F5E9; color: #2E7D32; border-color: #A5D6A7; }
-.cat-intimate { background: #FCE4EC; color: #880E4F; border-color: #F48FB1; }
-.cat-ibuprofen { background: #EDE7F6; color: #4527A0; border-color: #CE93D8; }
-.cat-solkrem { background: #FFF8E1; color: #F57C00; border-color: #FFE082; }
+.cat-hud { background: #EBF5FB; color: #1A6B9A; border-color: #BEE3F8; }
+.cat-smerte { background: #FFF3E0; color: #E65100; border-color: #FFCC80; }
+.cat-munn { background: #E8F5E9; color: #2E7D32; border-color: #A5D6A7; }
+.cat-intim { background: #FCE4EC; color: #880E4F; border-color: #F48FB1; }
+.cat-mage { background: #EDE7F6; color: #4527A0; border-color: #CE93D8; }
+.cat-fot { background: #FFF8E1; color: #F57C00; border-color: #FFE082; }
+.cat-path { margin-top: 0.25rem; font-size: 0.68rem; color: var(--text-faint); line-height: 1.3; }
+.show-more {
+  display: flex; align-items: center; justify-content: center; gap: 0.5rem; flex-wrap: wrap;
+  padding: 1rem; font-size: 0.75rem; color: var(--text-faint);
+}
 
 /* ---- STATES ---- */
 .empty { text-align: center; padding: 4rem; color: var(--text-muted); }

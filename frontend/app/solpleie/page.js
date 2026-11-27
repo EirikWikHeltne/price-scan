@@ -12,15 +12,9 @@ import { fetchJson } from '@/lib/fetchJson'
 import { matchesSearch } from '@/lib/search'
 import { compareValues } from '@/lib/sort'
 import { deriveRetailers } from '@/lib/retailers'
+import { isSunCare } from '@/lib/categories'
 import { fmt } from '@/lib/format'
 import { useLastUpdated } from '@/lib/useLastUpdated'
-
-// "Solpleie" dekker solkrem, after sun og beslektede kategorier. Vi matcher
-// alle kategorier som inneholder "sol" eller "sun" (norsk + engelsk) slik at
-// kartet fanger opp ulike kategorinavn automatisk.
-function isSunCare(kategori) {
-  return typeof kategori === 'string' && /sol|sun/i.test(kategori)
-}
 
 // Beregn nøkkeltall per SKU på tvers av kjedene.
 function analyzeRow(row, retailers) {
@@ -89,13 +83,13 @@ export default function SolpleiePage() {
   }, [])
 
   // Finnes det i det hele tatt solpleie-kategorier i datagrunnlaget?
-  const hasSunCare = useMemo(() => data.some(r => isSunCare(r.kategori)), [data])
+  const hasSunCare = useMemo(() => data.some(isSunCare), [data])
 
   // Velg produktgrunnlag ut fra scope. Faller automatisk tilbake til alle
   // produkter dersom det ikke finnes noen solpleie-kategori i dataene, slik at
   // siden aldri blir stående tom.
   const baseProducts = useMemo(() => {
-    if (scope === 'solpleie' && hasSunCare) return data.filter(r => isSunCare(r.kategori))
+    if (scope === 'solpleie' && hasSunCare) return data.filter(isSunCare)
     return data
   }, [data, scope, hasSunCare])
 
@@ -196,6 +190,8 @@ export default function SolpleiePage() {
         Produkt: row.produkt,
         Merke: row.merke,
         Kategori: row.kategori,
+        'Nivå 1': row.niva1 ?? null,
+        'Nivå 2': row.niva2 ?? null,
       }
       retailers.forEach(r => { obj[r.label] = row[r.key] ?? null })
       obj['Laveste pris'] = c.min

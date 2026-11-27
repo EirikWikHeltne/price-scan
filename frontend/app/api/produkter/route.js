@@ -13,13 +13,21 @@ export async function GET() {
   }
 
   const startedAt = performance.now()
-  const { data, error } = await fetchAllRows(() => supabase
+  const load = columns => fetchAllRows(() => supabase
     .from('prissammenligning')
-    .select('id, produkt, merke, varenummer, kategori, sist_oppdatert', { count: 'exact' })
+    .select(columns, { count: 'exact' })
     .order('kategori')
     .order('merke')
     .order('produkt')
     .order('id'))
+
+  const BASE = 'id, produkt, merke, varenummer, kategori, sist_oppdatert'
+  let { data, error } = await load(`${BASE}, niva1, niva2, niva3, segment`)
+  // 42703: kolonnen finnes ikke — supabase_migration_category_tree.sql er
+  // ikke kjørt ennå. Svar uten undernivåene i stedet for å feile.
+  if (error?.code === '42703') {
+    ;({ data, error } = await load(BASE))
+  }
 
   if (error) {
     console.error('Supabase error:', error)

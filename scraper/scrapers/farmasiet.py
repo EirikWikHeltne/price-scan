@@ -3,7 +3,7 @@ import re, time
 from urllib.parse import quote
 from playwright.sync_api import sync_playwright
 from ._common import (
-    code_variants, safe_url, http_session,
+    code_variants, due_for_lookup, safe_url, http_session,
     fetch_price_http, fetch_price_browser,
 )
 
@@ -102,12 +102,17 @@ def run(products):
         # call, and uncapped calls have hung scrape runs for hours.
         context.set_default_timeout(15000)
 
+        skipped = 0
         for prod in products:
             vn = prod["varenummer"]
             cached = prod.get("url_farmasiet")
             # Discard bad category URLs (no comma+digits = not a product page)
             if not _valid_product_url(cached):
                 cached = None
+            if not cached and not due_for_lookup(prod):
+                # Not found on earlier runs; searched for again once per cycle.
+                skipped += 1
+                continue
 
             url = cached
             if not url:
@@ -135,6 +140,8 @@ def run(products):
             results.append({"produkt_id": prod["id"], "butikk": BUTIKK, "pris": pris, "pa_lager": lager})
             time.sleep(0.1)
 
+        if skipped:
+            print(f"  [farmasiet] {skipped} products without a known page not searched for on this run")
         context.close()
         browser.close()
     return results, resolved

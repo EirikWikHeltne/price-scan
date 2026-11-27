@@ -21,7 +21,7 @@ SCRAPERS = {
 
 # Grocery retailers only scrape these categories (pharmacy retailers get all)
 GROCERY_SCRAPERS = {"oda"}
-GROCERY_CATEGORIES = {"Paracetamol", "Ibuprofen"}
+GROCERY_CATEGORIES = {"Smerte"}
 
 MAX_WORKERS = 4  # run up to 4 scrapers in parallel
 
@@ -30,6 +30,24 @@ MAX_WORKERS = 4  # run up to 4 scrapers in parallel
 # Actions limit and the completed results were never inserted). After this
 # deadline the results gathered so far are inserted and the process exits.
 SCRAPE_TIMEOUT = 2.5 * 60 * 60  # seconds
+
+
+def _shard(products):
+    """The slice of the product list this job is responsible for.
+
+    The nightly workflow splits the list over SHARD_TOTAL parallel jobs so
+    each stays well inside its time limit. Without the variables (a local
+    run) every product is scraped.
+    """
+    total = int(os.environ.get("SHARD_TOTAL") or 1)
+    index = int(os.environ.get("SHARD_INDEX") or 0)
+    if total <= 1:
+        return products
+    if not 0 <= index < total:
+        sys.exit(f"SHARD_INDEX must be between 0 and {total - 1}, got {index}")
+    mine = [p for p in products if p["id"] % total == index]
+    print(f"Shard {index + 1}/{total}: {len(mine)} of {len(products)} products")
+    return mine
 
 
 def _run_scraper(name, module, products):
@@ -106,9 +124,10 @@ def run():
     print(f"=== Scrape started {datetime.now().isoformat()} ===")
     products = get_active_products()
     print(f"Loaded {len(products)} products")
+    products = _shard(products)
 
     grocery_products = [p for p in products if p.get("kategori") in GROCERY_CATEGORIES]
-    print(f"Grocery-filtered: {len(grocery_products)} products (Paracetamol/Ibuprofen)")
+    print(f"Grocery-filtered: {len(grocery_products)} products ({', '.join(sorted(GROCERY_CATEGORIES))})")
 
     all_rows = []
     # No `with` block: shutdown would join threads, and a hung scraper thread

@@ -7,6 +7,7 @@ export const KNOWN_RETAILER_STYLES = {
 
 export const NON_RETAILER_COLS = new Set([
   'id', 'produktid', 'produkt', 'merke', 'varenummer', 'kategori',
+  'niva1', 'niva2', 'niva3', 'segment', 'ean', 'produsent',
   'sist_oppdatert', 'laveste_pris', 'hoyeste_pris', 'dato',
   'snitt', 'antall',
 ])

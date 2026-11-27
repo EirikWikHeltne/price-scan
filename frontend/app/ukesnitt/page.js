@@ -8,6 +8,9 @@ import { fmt } from '@/lib/format'
 import { useLastUpdated } from '@/lib/useLastUpdated'
 import { buildWeekly } from '@/lib/ukesnitt'
 import { matchesSearch } from '@/lib/search'
+import CategoryFilter from '@/components/CategoryFilter'
+import ShowMore, { ROW_STEP } from '@/components/ShowMore'
+import { ALL, NO_FILTER, matchesLevels, setLevel } from '@/lib/categories'
 
 const WEEK_RANGES = [
   { label: '4 uker', value: 28 },
@@ -25,7 +28,9 @@ export default function UkesnittPage() {
   const [search, setSearch]     = useState('')
 
   const deferredSearch = useDeferredValue(search)
-  const [kategori, setKategori] = useState('alle')
+  const [tree, setTree]         = useState(null) // produktene kategorivalgene hentes fra
+  const [cat, setCat]           = useState(NO_FILTER)
+  const [rowLimit, setRowLimit] = useState(ROW_STEP)
   const [merke, setMerke]       = useState('alle')
   const [chain, setChain]       = useState(null)
   const [dager, setDager]       = useState(84)
@@ -36,14 +41,32 @@ export default function UkesnittPage() {
   // periode ikke overskriver svaret for den som er valgt nå.
   const requestId = useRef(0)
 
-  // Ukesnittene regnes ut i databasen; svaret er én rad per produkt.
+  // Kategoritreet hentes først, og første kategori velges: ukesnitt for hele
+  // produktlisten på én gang er for mye å hente. Feiler dette, hentes alt.
+  useEffect(() => {
+    fetchJson('/api/produkter')
+      .catch(() => [])
+      .then(json => {
+        const rows = Array.isArray(json) ? json : []
+        const first = [...new Set(rows.map(r => r.kategori).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'nb'))[0]
+        if (first) setCat(c => (c.kategori === ALL ? setLevel(c, 'kategori', first) : c))
+        setTree(rows)
+      })
+  }, [])
+
+  // Ukesnittene regnes ut i databasen; svaret er én rad per produkt i valgt
+  // kategori (og nivå 1, når det er valgt).
   const fetchWeekly = useCallback(async () => {
+    if (!tree) return
     const id = ++requestId.current
     const isStale = () => id !== requestId.current
     setLoading(true)
     setError(null)
     try {
-      const json = await fetchJson(`/api/ukesnitt?dager=${dager}`)
+      const params = new URLSearchParams({ dager: String(dager) })
+      if (cat.kategori !== ALL) params.set('kategori', cat.kategori)
+      if (cat.niva1 !== ALL) params.set('niva1', cat.niva1)
+      const json = await fetchJson(`/api/ukesnitt?${params}`)
       if (isStale()) return
       if (Array.isArray(json)) {
         setData(json)
@@ -57,7 +80,7 @@ export default function UkesnittPage() {
       setData([])
     }
     setLoading(false)
-  }, [dager])
+  }, [dager, tree, cat.kategori, cat.niva1])
 
   useEffect(() => { fetchWeekly() }, [fetchWeekly])
 
@@ -70,17 +93,17 @@ export default function UkesnittPage() {
     setChain(prev => (prev && retailers.some(r => r.key === prev) ? prev : retailers[0].key))
   }, [retailers])
 
-  const categories = useMemo(() => {
-    const set = new Set()
-    rows.forEach(r => { if (r.kategori) set.add(r.kategori) })
-    return [...set].sort((a, b) => a.localeCompare(b))
-  }, [rows])
+  // Uten kategoritre (hentingen feilet) brukes produktene i svaret.
+  const treeRows = tree?.length ? tree : rows
 
   const brands = useMemo(() => {
     const set = new Set()
-    rows.forEach(r => { if (r.merke) set.add(r.merke) })
+    rows.forEach(r => { if (r.merke && matchesLevels(r, cat)) set.add(r.merke) })
     return [...set].sort((a, b) => a.localeCompare(b))
-  }, [rows])
+  }, [rows, cat])
+
+  // Valgt merke finnes kanskje ikke i kategorien det byttes til
+  const activeMerke = brands.includes(merke) ? merke : 'alle'
 
   // Rows for the currently selected chain, with the average computed per week.
   const chainRows = useMemo(() => {
@@ -99,11 +122,11 @@ export default function UkesnittPage() {
         return { ...p, values, hasAny }
       })
       .filter(p => p.hasAny)
-      .filter(p => kategori === 'alle' || p.kategori === kategori)
-      .filter(p => merke === 'alle' || p.merke === merke)
+      .filter(p => matchesLevels(p, cat))
+      .filter(p => activeMerke === 'alle' || p.merke === activeMerke)
       .filter(p => matchesSearch({ ...p, varenummer: p.vn }, deferredSearch))
       .sort((a, b) => (a.produkt || '').localeCompare(b.produkt || ''))
-  }, [rows, weeks, chain, kategori, merke, deferredSearch])
+  }, [rows, weeks, chain, cat, activeMerke, deferredSearch])
 
   const chainLabel = retailers.find(r => r.key === chain)?.label || ''
 
@@ -115,6 +138,8 @@ export default function UkesnittPage() {
         Merke: p.merke,
         Varenummer: p.vn,
         Kategori: p.kategori,
+        'Nivå 1': p.niva1 || null,
+        'Nivå 2': p.niva2 || null,
       }
       weeks.forEach(w => { obj[`Uke ${w.week} (${w.year})`] = p.values[w.key] ?? null })
       return obj
@@ -141,21 +166,11 @@ export default function UkesnittPage() {
             onChange={e => setSearch(e.target.value)}
           />
         </div>
-        <div className="filter-tabs">
-          {['alle', ...categories].map(k => (
-            <button
-              key={k}
-              className={`tab ${kategori === k ? 'active' : ''}`}
-              onClick={() => setKategori(k)}
-            >
-              {k === 'alle' ? 'Alle kategorier' : k}
-            </button>
-          ))}
-        </div>
+        <CategoryFilter rows={treeRows} value={cat} onChange={setCat} allowAll={!tree?.length} />
         <select
           className="brand-select"
           aria-label="Merke"
-          value={merke}
+          value={activeMerke}
           onChange={e => setMerke(e.target.value)}
         >
           <option value="alle">Alle merker</option>
@@ -233,7 +248,7 @@ export default function UkesnittPage() {
               </tr>
             </thead>
             <tbody>
-              {chainRows.map(p => (
+              {chainRows.slice(0, rowLimit).map(p => (
                 <tr key={p.vn}>
                   <td className="td-product ukesnitt-prodcol">
                     <div className="product-name">{p.produkt}</div>
@@ -270,6 +285,14 @@ export default function UkesnittPage() {
               ))}
             </tbody>
           </table>
+        )}
+        {!loading && !error && weeks.length > 0 && (
+          <ShowMore
+            shown={Math.min(rowLimit, chainRows.length)}
+            total={chainRows.length}
+            onMore={() => setRowLimit(n => n + ROW_STEP)}
+            onAll={() => setRowLimit(Infinity)}
+          />
         )}
       </div>
 
